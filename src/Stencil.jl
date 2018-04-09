@@ -53,7 +53,7 @@ end
 
 
 Base.norm{T}(g::Grid{T,2,5}) = Base.LinAlg.vecnorm2(g.A[2:end-1, 2:end-1])
-Base.norm{T}(g::Grid{T,3,7}) = Base.LinAlg.vecnorm2(g.A[2:end-1, 2:end-1, 2:end-1])
+Base.norm{T}(g::Grid{T,3,7}) = Base.LinAlg.vecnorm2(g.A)
 Base.dot{T}(x::Grid{T,2,5}, y::Grid{T,2,5}) = vecdot(x.A[2:end-1, 2:end-1], y.A[2:end-1, 2:end-1])
 Base.dot{T}(x::Grid{T,3,7}, y::Grid{T,3,7}) = vecdot(x.A[2:end-1, 2:end-1, 2:end-1], y.A[2:end-1, 2:end-1, 2:end-1])
 

@@ -201,10 +201,10 @@ function solve(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, gmrestol=1e-5
     end
     psgrid
 end
-function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, printil=false)
+function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, printil=false, gmrestol=1e-5)
     psgrid = fill(grid_in, Tf)
     for t = 1:Tf-1
-        if printt println(t) end
+        if printt println("day ",t,"...") end
         # Solve RES = 0 for each step, Initial guess psgrid[t]
         g_guess = psgrid[t] # Initial guess is previous p and S
         resv = getresidual(m, q[t], g_guess, psgrid[t])
@@ -213,7 +213,7 @@ function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, printil=
             if printil print("1") end
             S = getstencil(m, q[t], g_guess, psgrid[t])
             P, E = make_P_E(S)
-            gmresresult = stencilgmres(S, resv, rstrt;maxiter = mi,M=(t->precond_1(P,E,t)))
+            gmresresult = stencilgmres(S, resv, rstrt;tol = gmrestol, maxiter = mi, M=(t->precond_1(P,E,t)))
             g_guess -= gmresresult[1]
             ismax = gmresresult[2]
             resv = getresidual(m, q[t], g_guess, psgrid[t])

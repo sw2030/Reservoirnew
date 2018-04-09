@@ -1,9 +1,9 @@
-function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0)
+function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
 
     Nx, Ny, Nz = size(m.Δ[1])
 
     # Production
-    q_water = q[1]
+    q_water = g[4,1]>maxinj ? 0.0 : q[1]  ## if pressure is larger than max, no injection
     q_oil   = bth? 0.0 : q[2]
 
     im1 = max(1, i-1)
