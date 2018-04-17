@@ -53,7 +53,7 @@ end
 
 
 Base.norm{T}(g::Grid{T,2,5}) = Base.LinAlg.vecnorm2(g.A[2:end-1, 2:end-1])
-Base.norm{T}(g::Grid{T,3,7}) = Base.LinAlg.vecnorm2(g.A)
+Base.norm{T}(g::Grid{T,3,7}) = Base.LinAlg.vecnorm2(g.A[2:end-1, 2:end-1, 2:end-1])
 Base.dot{T}(x::Grid{T,2,5}, y::Grid{T,2,5}) = vecdot(x.A[2:end-1, 2:end-1], y.A[2:end-1, 2:end-1])
 Base.dot{T}(x::Grid{T,3,7}, y::Grid{T,3,7}) = vecdot(x.A[2:end-1, 2:end-1, 2:end-1], y.A[2:end-1, 2:end-1, 2:end-1])
 
@@ -122,7 +122,20 @@ function Base.A_mul_B!{Txy,TS}(a::Number, S::Stencil{TS,2}, x::Grid{Txy,2},  b::
     end
     return y
 end
-function Base.A_mul_B!(a::Number, S::Stencil{TS,3,P}, x::Grid{Txy,3,P},  b::Number, y::Grid{Txy,3,P}) where {Txy,TS,P}
+function Base.A_mul_B!(a::Number, S::Stencil{TS,3,7}, x::Grid{Txy,3,7},  b::Number, y::Grid{Txy,3,7}) where {Txy,TS}
+    scale!(y.A, b)
+    s1, s2, s3 = size(S.v)
+     for i = 1:s1, j = 1:s2, k = 1:s3
+        tmp = zero(Txy)
+        @inbounds for (idx, value) in S[i,j,k]
+            ix, jy, kz = idx
+            tmp += value*x[i+ix, j+jy, k+kz]
+        end
+        y[i,j,k] += a*tmp
+    end
+    return y
+end
+#=function Base.A_mul_B!(a::Number, S::Stencil{TS,3,P}, x::Grid{Txy,3,P},  b::Number, y::Grid{Txy,3,P}) where {Txy,TS,P}
     scale!(y.A, b)
     s1, s2, s3 = size(y)
     for i = 1:s1, j = 1:s2, k = 1:s3
@@ -134,7 +147,7 @@ function Base.A_mul_B!(a::Number, S::Stencil{TS,3,P}, x::Grid{Txy,3,P},  b::Numb
         y[i,j,k] += a*tmp
     end
     return y
-end
+end=#
 Base.A_mul_B!{Txy,TS,N,P}(y::Grid{Txy,N,P}, S::Stencil{TS,N,P}, x::Grid{Txy,N,P}) = A_mul_B!(1.0, S, x, 0.0, y)
 Base.:*{TS,Tx,N,P,A}(S::Stencil{TS,N,P}, x::Grid{Tx,N,P,A}) = A_mul_B!(Grid{Tx,N,P,A}(zero(x.A)), S, x)
 
