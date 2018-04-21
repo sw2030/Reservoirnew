@@ -56,6 +56,10 @@ function Base.scale!(g::DGrid, a::Number)
     end
     return g
 end
+function zero2{T,N,P,S}(g::DGrid{T,N,P,S})
+    D = zero(g.A)
+    return Grid{T,N,1,DistributedArrays.DArray{T,N,Grid{T,N,P,S}}}(D)
+end
 function zero{T,N,P,S}(g::DGrid{T,N,P,S})
     D = DArray(I->zero(localpart(g)), g.A)
     return Grid{T,N,1,DistributedArrays.DArray{T,N,Grid{T,N,P,S}}}(D)

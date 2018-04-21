@@ -122,12 +122,12 @@ function Base.A_mul_B!{Txy,TS}(a::Number, S::Stencil{TS,2}, x::Grid{Txy,2},  b::
     end
     return y
 end
-function Base.A_mul_B!(a::Number, S::Stencil{TS,3,7}, x::Grid{Txy,3,7},  b::Number, y::Grid{Txy,3,7}) where {Txy,TS}
+function Base.A_mul_B!(a::Number, S::Stencil{TS,3,P}, x::Grid{Txy,3,P},  b::Number, y::Grid{Txy,3,P}) where {Txy,TS,P}
     scale!(y.A, b)
     s1, s2, s3 = size(S.v)
-     for i = 1:s1, j = 1:s2, k = 1:s3
+    @inbounds for i = 1:s1, j = 1:s2, k = 1:s3
         tmp = zero(Txy)
-        @inbounds for (idx, value) in S[i,j,k]
+         for (idx, value) in S[i,j,k]
             ix, jy, kz = idx
             tmp += value*x[i+ix, j+jy, k+kz]
         end
