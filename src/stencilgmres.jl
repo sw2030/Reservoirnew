@@ -1,10 +1,8 @@
-function stencilgmres(A, b::Grid, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifprint=false, M=identity, x = zero(b))
-    realn = gridsize(b)
-    bnrm2 = norm(b)
+function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifprint=false, M=identity, x = zero(b))
+    realn, bnrm2 = gridsize(b), norm(b)
     if bnrm2==0 bnrm2 = 1.0 end
-    r = zero(b)+b
-    A_mul_B!(-1.0, A, x, 1.0, r)
-    #r = b-A*x
+    r = copy(b)
+    A_mul_B!(-1, A, x, 1, r)
     err = norm(r)/bnrm2
     iter = 0
     ismax = false
@@ -25,15 +23,15 @@ function stencilgmres(A, b::Grid, restrt::Int64; tol::Real=1e-5, maxiter::Int=20
         if ifprint print(iter) end
         r = Q[1]
         copy!(r, b)
-        A_mul_B!(-1.0, A, x, 1.0, r)
+        A_mul_B!(-1, A, x, 1, r)
         copy!(r, M(r))
-        fill!(s, 0)
+        fill!(s, 0.0)
         s[1] = norm(r)
         scale!(r, inv(s[1]))
 
         for i in 1:restrt
             w = Q[i+1]
-            A_mul_B!(1.0, A, Q[i], 0.0, w)
+            A_mul_B!(1, A, Q[i], 0, w)
             copy!(w, M(w))
             #w = A*Q[i]
             for k in 1:i
@@ -88,8 +86,6 @@ function stencilgmres(A, b::Grid, restrt::Int64; tol::Real=1e-5, maxiter::Int=20
             flag = 0
             break
         end
-
-        #r = b-A*x
     end
     if flag==-1
         print("Maxiter")

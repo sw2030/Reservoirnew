@@ -1,5 +1,5 @@
 
-type Reservoirmodel{S<:AbstractArray}
+struct Reservoirmodel{S<:AbstractArray}
     # L::NTuple{N,Float64}
     # Ns::NTuple{N,Int64}
     Δt::Float64
@@ -21,6 +21,7 @@ type Reservoirmodel{S<:AbstractArray}
     μ_w::Float64
     μ_o::Float64
 end
+Base.size(M::Reservoirmodel) = size(z)
 
 function res_f(m, q, g, g_prev, i, j)
 
@@ -201,7 +202,8 @@ function solve(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, gmrestol=1e-5
     end
     psgrid
 end
-function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, printil=false, gmrestol=1e-5)
+function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100,
+                        mi=100, printil=false, gmrestol=1e-5, f=make_P_E_precond_1)
     psgrid = fill(grid_in, Tf)
     for t = 1:Tf-1
         if printt println("day ",t,"...") end
@@ -212,7 +214,7 @@ function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, printil=
         while( norm(resv) > 1.0e-2 || ismax==true )
             if printil print("1") end
             S = getstencil(m, q, g_guess, psgrid[t])
-            P, E = make_P_E_precond_1(S)
+            P, E = f(S)
             gmresresult = stencilgmres(S, resv, rstrt;tol = gmrestol, maxiter = mi, M=(t->precond_1(P,E,t)))
             g_guess -= gmresresult[1]
             ismax = gmresresult[2]
@@ -225,4 +227,7 @@ end
 function getstencil{T,N,P,S}(m, q, g::Grid{T,N,P,S}, g_prev::Grid{T,N,P,S})
     SS = getstencilArray(m, q, g, g_prev)
     return Stencil{eltype(eltype(SS)),N,P,typeof(SS)}(SS)
+end
+function getstencil{M,T,N,P,S}(m, q, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S})
+    return MStencil{M*M,T,N,P,Array{StencilPoint{T,N,P},N}}(Stencil{T,N,P,Array{StencilPoint{T,N,P},N}}.(getstencilArray(m, q, g, g_prev)))
 end

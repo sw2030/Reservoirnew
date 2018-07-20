@@ -1,6 +1,6 @@
 function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
 
-    Nx, Ny, Nz = size(m.Δ[1])
+    Nx, Ny, Nz = size(m)
 
     # Production
     q_water = g[4,1]>maxinj ? 0.0 : q[1]  ## if pressure is larger than max, no injection
@@ -38,7 +38,7 @@ function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
     S_water_ijkp1   = g[5,2]
     S_water_ijp1k   = g[6,2]
     S_water_ip1jk   = g[7,2]
-    S_water_prev   = g_prev[i, j, k][2]
+    S_water_prev   = g_prev[i,j,k,2]
 
     S_oil_im1jk   = 1-S_water_im1jk
     S_oil_ijm1k   = 1-S_water_ijm1k
@@ -57,7 +57,7 @@ function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
     p_oil_ijkp1   = g[5,1]
     p_oil_ijp1k   = g[6,1]
     p_oil_ip1jk   = g[7,1]
-    p_oil_prev   = g_prev[i, j, k][1]
+    p_oil_prev   = g_prev[i,j,k,1]
 
     p_water_im1jk = p_oil_im1jk - m.p_cow(S_water_im1jk)
     p_water_ijm1k = p_oil_ijm1k - m.p_cow(S_water_ijm1k)
@@ -160,35 +160,35 @@ function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
     return [residual_water_ijk, residual_oil_ijk]
 end
 
-function res_each{T}(m, q, g::Grid{T,3,7,Array{T,3}}, g_prev::Grid{T,3,7,Array{T,3}}, i, j, k)
-    return res_f(m, q[i,j,k,:], [g[i-1,j,k][1] g[i-1,j,k][2]; g[i,j-1,k][1] g[i,j-1,k][2];
-                  g[i,j,k-1][1] g[i,j,k-1][2]; g[i,j,k][1] g[i,j,k][2];
-                  g[i,j,k+1][1] g[i,j,k+1][2]; g[i,j+1,k][1] g[i,j+1,k][2];
-                  g[i+1,j,k][1] g[i+1,j,k][2]], g_prev, i, j, k)
+function res_each{T}(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}}, i, j, k)
+    return res_f(m, q[i,j,k,:], [g[i-1,j,k,1] g[i-1,j,k,2]; g[i,j-1,k,1] g[i,j-1,k,2];
+                                    g[i,j,k-1,1] g[i,j,k-1,2]; g[i,j,k,1] g[i,j,k,2];
+                                    g[i,j,k+1,1] g[i,j,k+1,2]; g[i,j+1,k,1] g[i,j+1,k,2];
+                                    g[i+1,j,k,1] g[i+1,j,k,2]], g_prev, i, j, k)
 end
-function getresidual{T}(m, q, g::Grid{T,3,7,Array{T,3}}, g_prev::Grid{T,3,7,Array{T,3}})
-    Nx, Ny, Nz = size(m.Δ[1])
-    return makegrid([SVector{2,Float64}(res_each(m, q, g, g_prev, i, j, k)) for i=1:Nx, j=1:Ny, k=1:Nz], 7)
+function getresidual{T}(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}})
+    Nx, Ny, Nz = size(m)
+    tmp = [res_each(m, q, g, g_prev, i, j, k) for i=1:Nx, j=1:Ny, k=1:Nz]
+    return MGrid{2,T,3,7,Array{T,3}}((makegrid([tmp[i,j,k][1] for i in 1:Nx, j in 1:Ny, k in 1:Nz],7),makegrid([tmp[i,j,k][2] for i in 1:Nx, j in 1:Ny, k in 1:Nz],7)))
 end
 function getlocalresidual{T}(m, q, g::Grid{T,3,7,Array{T,3}}, g_prev::Grid{T,3,7,Array{T,3}})
-    Nx, Ny, Nz = size(m.Δ[1])
+    Nx, Ny, Nz = size(m)
     return [SVector{2,Float64}(res_each(m, q, g, g_prev, i, j, k)) for i=1:Nx, j=1:Ny, k=1:Nz]
 end
-function getstencilArray{T}(m, q, g::Grid{T,3,7,Array{T,3}}, g_prev::Grid{T,3,7,Array{T,3}})
-    Nx, Ny, Nz = size(m.Δ[1])
-    stencilArray = Array{StencilPoint{SMatrix{2,2,Float64,4},3,7},3}(Nx, Ny, Nz)
+function getstencilArray{T}(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}})
+    Nx, Ny, Nz = size(m)
+    stencilArray1 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
+    stencilArray2 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
+    stencilArray3 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
+    stencilArray4 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
     for i in 1:Nx, j in 1:Ny, k in 1:Nz
-        J = ForwardDiff.jacobian(θ -> res_f(m, q[i,j,k,:], θ, g_prev, i, j, k), [g[i-1,j,k][1] g[i-1,j,k][2]; g[i,j-1,k][1] g[i,j-1,k][2];
-                                                      g[i,j,k-1][1] g[i,j,k-1][2]; g[i,j,k][1] g[i,j,k][2];
-                                                      g[i,j,k+1][1] g[i,j,k+1][2]; g[i,j+1,k][1] g[i,j+1,k][2]; g[i+1,j,k][1] g[i+1,j,k][2]])
-        stencilArray[i,j,k] = StencilPoint{SMatrix{2,2,Float64,4},3,7}(
-            (@SMatrix([J[1,1] J[1,8]; J[2,1] J[2,8]]),
-             @SMatrix([J[1,2] J[1,9]; J[2,2] J[2,9]]),
-             @SMatrix([J[1,3] J[1,10]; J[2,3] J[2,10]]),
-             @SMatrix([J[1,4] J[1,11]; J[2,4] J[2,11]]),
-             @SMatrix([J[1,5] J[1,12]; J[2,5] J[2,12]]),
-             @SMatrix([J[1,6] J[1,13]; J[2,6] J[2,13]]),
-             @SMatrix([J[1,7] J[1,14]; J[2,7] J[2,14]]),))
+        J = ForwardDiff.jacobian(θ -> res_f(m, q[i,j,k,:], θ, g_prev, i, j, k), [g[i-1,j,k,1] g[i-1,j,k,2]; g[i,j-1,k,1] g[i,j-1,k,2];
+                                                                                    g[i,j,k-1,1] g[i,j,k-1,2]; g[i,j,k,1] g[i,j,k,2];
+                                                                                    g[i,j,k+1,1] g[i,j,k+1,2]; g[i,j+1,k,1] g[i,j+1,k,2]; g[i+1,j,k,1] g[i+1,j,k,2]])
+        stencilArray1[i,j,k] = StencilPoint{Float64,3,7}((J[1,1],J[1,2],J[1,3],J[1,4],J[1,5],J[1,6],J[1,7]))
+        stencilArray2[i,j,k] = StencilPoint{Float64,3,7}((J[1,8],J[1,9],J[1,10],J[1,11],J[1,12],J[1,13],J[1,14]))
+        stencilArray3[i,j,k] = StencilPoint{Float64,3,7}((J[2,1],J[2,2],J[2,3],J[2,4],J[2,5],J[2,6],J[2,7]))
+        stencilArray4[i,j,k] = StencilPoint{Float64,3,7}((J[2,8],J[2,9],J[2,10],J[2,11],J[2,12],J[2,13],J[2,14]))
     end
-    return stencilArray
+    return stencilArray1, stencilArray2, stencilArray3, stencilArray4
 end
