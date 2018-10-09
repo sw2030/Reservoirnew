@@ -4,7 +4,7 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
     r = copy(b)
     A_mul_B!(-1, A, x, 1, r)
     err = norm(r)/bnrm2
-    iter = 0
+    itersave = 0
     ismax = false
     if err<tol return x, ismax, iter, err end
 
@@ -15,31 +15,33 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
     sn = zeros(restrt)
     s = zeros(restrt+1)
     flag = -1
-    i = 1
+    isave = 1
 
     y = zeros(restrt+1)
 
     for iter in 1:maxiter
+        itersave = iter
         if ifprint print(iter) end
         r = Q[1]
-        copy!(r, b)
+        copyto!(r, b)
         A_mul_B!(-1, A, x, 1, r)
-        copy!(r, M(r))
+        copyto!(r, M(r))
         fill!(s, 0.0)
         s[1] = norm(r)
-        scale!(r, inv(s[1]))
+        rmul!(r, inv(s[1]))
 
         for i in 1:restrt
+            isave = i
             w = Q[i+1]
             A_mul_B!(1, A, Q[i], 0, w)
-            copy!(w, M(w))
+            copyto!(w, M(w))
             #w = A*Q[i]
             for k in 1:i
                 H[k,i] = dot(w, Q[k])
-                LinAlg.axpy!(-H[k,i],Q[k],w)
+                LinearAlgebra.axpy!(-H[k,i],Q[k],w)
             end
             H[i+1,i] = norm(w)
-            scale!(w, inv(H[i+1,i]))
+            rmul!(w, inv(H[i+1,i]))
             #Q[i+1] = w/H[i+1, i]
             for k in 1:i-1
                 temp     =  cs[k]*H[k,i] + sn[k]*H[k+1,i]
@@ -47,21 +49,21 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
                 H[k,i]   = temp
             end
 
-            cs[i], sn[i] = LinAlg.givensAlgorithm(H[i, i], H[i+1, i])
+            cs[i], sn[i] = LinearAlgebra.givensAlgorithm(H[i, i], H[i+1, i])
             s[i+1] = -sn[i]*s[i]
             s[i]   = cs[i]*s[i]
             H[i,i] = cs[i]*H[i,i] + sn[i]*H[i+1,i]
             H[i+1,i] = 0.0
-            err  = norm(s[i+1])/bnrm2
+            err  = abs(s[i+1])/bnrm2
             #@show err
 
             if err <= tol
                 #y[1:i]  = H[1:i,1:i] \ s[1:i]
-                copy!(y, s)
-                A_ldiv_B!(UpperTriangular(view(H, 1:i, 1:i)), view(y, 1:i))
+                copyto!(y, s)
+                ldiv!(UpperTriangular(view(H, 1:i, 1:i)), view(y, 1:i))
                 for k in 1:i
                     #x += y[k]*Q[k]
-                    LinAlg.axpy!(y[k],Q[k],x)
+                    LinearAlgebra.axpy!(y[k],Q[k],x)
                 end
                 # x += Q[:,1:i]*y
                 flag = 0; break
@@ -72,16 +74,16 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
             break
         end
         #y = H[1:restrt,1:restrt]\s[1:restrt]
-        copy!(y, s)
-        A_ldiv_B!(UpperTriangular(view(H, 1:restrt, 1:restrt)), view(y, 1:restrt))  #x += Q[:,1:restrt]*y
+        copyto!(y, s)
+        ldiv!(UpperTriangular(view(H, 1:restrt, 1:restrt)), view(y, 1:restrt))  #x += Q[:,1:restrt]*y
         for k in 1:restrt
-            LinAlg.axpy!(y[k],Q[k],x)  #x += y[k]*Q[k]
+            LinearAlgebra.axpy!(y[k],Q[k],x)  #x += y[k]*Q[k]
         end
-        copy!(r, b)
+        copyto!(r, b)
         A_mul_B!(-1.0, A, x, 1.0, r)
-        copy!(r, M(r))
-        s[i+1] = norm(r)
-        err = s[i+1]/bnrm2
+        copyto!(r, M(r))
+        s[isave+1] = norm(r)
+        err = s[isave+1]/bnrm2
         if err<=tol
             flag = 0
             break
@@ -92,5 +94,5 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
         ismax = true
     end
 
-    return x, ismax, iter, err
+    return x, ismax, itersave, err
 end

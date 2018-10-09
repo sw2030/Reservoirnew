@@ -4,7 +4,7 @@ function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
 
     # Production
     q_water = g[4,1]>maxinj ? 0.0 : q[1]  ## if pressure is larger than max, no injection
-    q_oil   = bth? 0.0 : q[2]
+    q_oil   = bth ? 0.0 : q[2]
 
     im1 = max(1, i-1)
     ip1 = min(Nx, i+1)
@@ -108,12 +108,12 @@ function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
     k_r_oil_above = Φ_oil_ijkp1 > Φ_oil_ijk ? m.k_r_o(S_water_ijkp1)*m.ρ_o(p_oil_ijkp1) : m.k_r_o(S_water_ijk)*m.ρ_o(p_oil_ijk)
 
 
-    Δx_west  = (m.Δ[1][im1,j,k] + m.Δ[1][i,j])/2
-    Δx_east  = (m.Δ[1][ip1,j,k] + m.Δ[1][i,j])/2
-    Δy_south = (m.Δ[2][i,jm1,k] + m.Δ[2][i,j])/2
-    Δy_north = (m.Δ[2][i,jp1,k] + m.Δ[2][i,j])/2
-    Δz_below = (m.Δ[3][i,j,km1] + m.Δ[3][i,j])/2
-    Δz_above = (m.Δ[3][i,j,kp1] + m.Δ[3][i,j])/2
+    Δx_west  = (m.Δ[1][im1,j,k] + m.Δ[1][i,j,k])/2
+    Δx_east  = (m.Δ[1][ip1,j,k] + m.Δ[1][i,j,k])/2
+    Δy_south = (m.Δ[2][i,jm1,k] + m.Δ[2][i,j,k])/2
+    Δy_north = (m.Δ[2][i,jp1,k] + m.Δ[2][i,j,k])/2
+    Δz_below = (m.Δ[3][i,j,km1] + m.Δ[3][i,j,k])/2
+    Δz_above = (m.Δ[3][i,j,kp1] + m.Δ[3][i,j,k])/2
 
 
     # The 1.127e-3 factor is oil field units. See Note 4.
@@ -132,7 +132,7 @@ function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
     T_oil_below   = 1.127e-3*k_below*k_r_oil_below/m.μ_o*A_below/Δz_below
     T_oil_above   = 1.127e-3*k_above*k_r_oil_above/m.μ_o*A_above/Δz_above
 
-    PI = bth ? 7.06e-3*(mean([m.k[i,j,k][direc] for direc in 1:3]))*m.Δ[3][i,j,k]/m.μ_o/log(0.2*m.Δ[1][i,j,k]/0.416) : 0.0
+    PI = bth ? 7.06e-3*(sum([m.k[i,j,k][direc] for direc in 1:3])/3.0)*m.Δ[3][i,j,k]/m.μ_o/log(0.2*m.Δ[1][i,j,k]/0.416) : 0.0
     if q[2]==0.0 PI = 0 end
 
     residual_water_ijk = T_water_west*(Φ_water_im1jk - Φ_water_ijk) +
@@ -160,27 +160,27 @@ function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
     return [residual_water_ijk, residual_oil_ijk]
 end
 
-function res_each{T}(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}}, i, j, k)
+function res_each(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}}, i, j, k) where {T}
     return res_f(m, q[i,j,k,:], [g[i-1,j,k,1] g[i-1,j,k,2]; g[i,j-1,k,1] g[i,j-1,k,2];
                                     g[i,j,k-1,1] g[i,j,k-1,2]; g[i,j,k,1] g[i,j,k,2];
                                     g[i,j,k+1,1] g[i,j,k+1,2]; g[i,j+1,k,1] g[i,j+1,k,2];
                                     g[i+1,j,k,1] g[i+1,j,k,2]], g_prev, i, j, k)
 end
-function getresidual{T}(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}})
+function getresidual(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}}) where {T}## Need modification. Inefficient derivation
     Nx, Ny, Nz = size(m)
     tmp = [res_each(m, q, g, g_prev, i, j, k) for i=1:Nx, j=1:Ny, k=1:Nz]
     return MGrid{2,T,3,7,Array{T,3}}((makegrid([tmp[i,j,k][1] for i in 1:Nx, j in 1:Ny, k in 1:Nz],7),makegrid([tmp[i,j,k][2] for i in 1:Nx, j in 1:Ny, k in 1:Nz],7)))
 end
-function getlocalresidual{T}(m, q, g::Grid{T,3,7,Array{T,3}}, g_prev::Grid{T,3,7,Array{T,3}})
+function getlocalresidual(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}}) where {T}## Need modification. Inefficient derivation
     Nx, Ny, Nz = size(m)
-    return [SVector{2,Float64}(res_each(m, q, g, g_prev, i, j, k)) for i=1:Nx, j=1:Ny, k=1:Nz]
+    return [res_each(m, q, g, g_prev, i, j, k) for i=1:Nx, j=1:Ny, k=1:Nz]
 end
-function getstencilArray{T}(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}})
+function getstencilArray(m, q, g::MGrid{2,T,3,7,Array{T,3}}, g_prev::MGrid{2,T,3,7,Array{T,3}}) where {T}
     Nx, Ny, Nz = size(m)
-    stencilArray1 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
-    stencilArray2 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
-    stencilArray3 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
-    stencilArray4 = Array{StencilPoint{Float64,3,7},3}(Nx, Ny, Nz)
+    stencilArray1 = Array{StencilPoint{Float64,3,7},3}(undef,Nx, Ny, Nz)
+    stencilArray2 = Array{StencilPoint{Float64,3,7},3}(undef,Nx, Ny, Nz)
+    stencilArray3 = Array{StencilPoint{Float64,3,7},3}(undef,Nx, Ny, Nz)
+    stencilArray4 = Array{StencilPoint{Float64,3,7},3}(undef,Nx, Ny, Nz)
     for i in 1:Nx, j in 1:Ny, k in 1:Nz
         J = ForwardDiff.jacobian(θ -> res_f(m, q[i,j,k,:], θ, g_prev, i, j, k), [g[i-1,j,k,1] g[i-1,j,k,2]; g[i,j-1,k,1] g[i,j-1,k,2];
                                                                                     g[i,j,k-1,1] g[i,j,k-1,2]; g[i,j,k,1] g[i,j,k,2];

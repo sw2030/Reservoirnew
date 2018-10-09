@@ -21,8 +21,10 @@ struct Reservoirmodel{S<:AbstractArray}
     μ_w::Float64
     μ_o::Float64
 end
-Base.size(M::Reservoirmodel) = size(z)
+Base.size(M::Reservoirmodel) = size(M.z)
 
+### Need update for 2D cases!!
+#=
 function res_f(m, q, g, g_prev, i, j)
 
     Nx, Ny = size(m.Δ[1])
@@ -167,7 +169,6 @@ function getlocalresidual{T}(m, q, g::Grid{T,2,5,Matrix{T}}, g_prev::Grid{T,2,5,
     Nx, Ny = size(m.Δ[1])
     return [SVector{2,Float64}(res_each(m, q, g, g_prev, i, j)) for i = 1:Nx, j = 1:Ny]
 end
-
 function getstencilArray{T}(m, q, g::Grid{T,2,5,Matrix{T}}, g_prev::Grid{T,2,5,Matrix{T}})
     Nx, Ny = size(m.Δ[1])
     stencilArray = Array{StencilPoint{SMatrix{2,2,Float64,4},2,5},2}(Nx, Ny)
@@ -182,7 +183,8 @@ function getstencilArray{T}(m, q, g::Grid{T,2,5,Matrix{T}}, g_prev::Grid{T,2,5,M
              @SMatrix([J[1,5] J[1,10]; J[2,5] J[2,10]])))
     end
     return stencilArray
-end
+end=#
+
 function solve(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, gmrestol=1e-5)
     psgrid = fill(grid_in, Tf)
     for t = 1:Tf-1
@@ -202,17 +204,17 @@ function solve(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, gmrestol=1e-5
     end
     psgrid
 end
-function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100,
+function solveprec1(m, q, grid_in, Ts, Tf; printt=false, rstrt=100,
                         mi=100, printil=false, gmrestol=1e-5, f=make_P_E_precond_1)
-    psgrid = fill(grid_in, Tf)
-    for t = 1:Tf-1
+    psgrid = fill(grid_in, Tf-Ts)
+    for t = Ts:Ts+Tf-1
         if printt println("day ",t,"...") end
         # Solve RES = 0 for each step, Initial guess psgrid[t]
         g_guess = psgrid[t] # Initial guess is previous p and S
         resv = getresidual(m, q, g_guess, psgrid[t])
         ismax = false
         while( norm(resv) > 1.0e-2 || ismax==true )
-            if printil print("1") end
+            if printil print(norm(resv)," ") end
             S = getstencil(m, q, g_guess, psgrid[t])
             P, E = f(S)
             gmresresult = stencilgmres(S, resv, rstrt;tol = gmrestol, maxiter = mi, M=(t->precond_1(P,E,t)))
@@ -224,10 +226,10 @@ function solveprec1(m, q, grid_in, Tf; printt=false, rstrt=100,
     end
     psgrid
 end
-function getstencil{T,N,P,S}(m, q, g::Grid{T,N,P,S}, g_prev::Grid{T,N,P,S})
+function getstencil(m, q, g::Grid{T,N,P,S}, g_prev::Grid{T,N,P,S}) where {T,N,P,S}
     SS = getstencilArray(m, q, g, g_prev)
     return Stencil{eltype(eltype(SS)),N,P,typeof(SS)}(SS)
 end
-function getstencil{M,T,N,P,S}(m, q, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S})
+function getstencil(m, q, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S}) where {M,T,N,P,S}
     return MStencil{M*M,T,N,P,Array{StencilPoint{T,N,P},N}}(Stencil{T,N,P,Array{StencilPoint{T,N,P},N}}.(getstencilArray(m, q, g, g_prev)))
 end
