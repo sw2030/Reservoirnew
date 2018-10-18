@@ -4,62 +4,67 @@ const DMGrid{M,T,N,P,S} = MGrid{M,T,N,1,DArray{T,N,Grid{T,N,P,S}}}
 const DStencil{T,N,P} = Stencil{T,N,P,<:DArray}
 const DMStencil{MM,T,N,P} = MStencil{MM,T,N,P,<:DArray}
 
-function A_mul_B!(a::Number, S::DStencil{TS,3}, x::DGrid{Txy,3},  b::Number, y::DGrid{Txy,3}) where {TS,Txy}
+Distributed.procs(DG::DGrid)   = procs(DG.A)
+Distributed.procs(DMG::DMGrid) = procs(DMG[1])
+
+# Full mul! for DGrid, DMGrid
+function gemv!(a::Number, S::DStencil{TS,N}, x::DGrid{Txy,N},  b::Number, y::DGrid{Txy,N}) where {TS,Txy,N}
     @sync begin
-        for id in procs(y.A)
+        for id in procs(y)
             @async remotecall_fetch(id) do
-                A_mul_B!(a, localpart(S), localpart(x), b, localpart(y))
+                gemv!(a, localpart(S), localpart(x), b, localpart(y))
                 nothing
             end
         end
     end
     @sync begin
-        for id in procs(y.A)
+        for id in procs(y)
             @async remotecall_fetch(gridsync, id, id, y.A)
         end
     end
     return y
 end
-### Full A_mul_B! case
-function A_mul_B!(a::Number, MS::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3},  b::Number, y::DMGrid{2,Txy,3}) where {Txy,TS}
-    A_mul_B!(a,MS[1],x[1],b,y[1])
-    A_mul_B!(a,MS[2],x[2],1,y[1])
-    A_mul_B!(a,MS[3],x[1],b,y[2])
-    A_mul_B!(a,MS[4],x[2],1,y[2])
+function gemv!(a::Number, MS::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3},  b::Number, y::DMGrid{2,Txy,3}) where {Txy,TS}
+    gemv!(a,MS[1],x[1],b,y[1])
+    gemv!(a,MS[2],x[2],1,y[1])
+    gemv!(a,MS[3],x[1],b,y[2])
+    gemv!(a,MS[4],x[2],1,y[2])
     return y
 end
-### A*b version
-function A_mul_B!(S::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3}, y::DMGrid{2,Txy,3}) where {TS,Txy}
+
+### A*b version for DGrid, DMGrid
+function mul!(y::DGrid{Txy,N,P}, S::DStencil{TS,N,P}, x::DGrid{Txy,N,P}) where {TS,Txy,N,P}
     @sync begin
-        for id in procs(y[1].A)
+        for id in procs(y)
             @async remotecall_fetch(id) do
-                A_mul_B!(localpart(S), localpart(x), localpart(y))
+                mul!(localpart(y), localpart(S), localpart(x))
                 nothing
             end
         end
     end
     @sync begin
-        for id in procs(y[1].A)
-            @async remotecall_fetch(id) do
-                gridsync(id, y[1].A)
-                gridsync(id, y[2].A)
-            end
+        for id in procs(y)
+            @async remotecall_fetch(gridsync, id, id, y.A)
         end
     end
-    y
+    return y
 end
-function Base.:*(S::DStencil{TS,N,P},x::DGrid{Tx,N,P,SS}) where {TS,N,Tx,P,SS}
-    D = DistributedArrays.DArray(I -> (*(localpart(S), localpart(x))), S.v)
-    @sync begin
-        for id in procs(D)
-            @async remotecall_fetch(gridsync, id, id, D)
-        end
-    end
-    return Grid{Tx,N,1,DistributedArrays.DArray{Tx,N,Grid{Tx,N,P,SS}}}(D)
+function mul!(y::DMGrid{2,Txy,3}, MS::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3}) where {TS,Txy}
+    mul!(y[1],MS[1],x[1])
+    mul!(y[1],MS[2],x[2])
+    mul!(y[2],MS[3],x[1])
+    mul!(y[2],MS[4],x[2])
+    return y
 end
-Base.:*(S::DMStencil{MM,TS,N,P},x::DMGrid{M,Txy,N,P,SS}) where {MM,M,TS,Txy,N,P,SS} = A_mul_B!(S, x, zero(x))
+Base.:*(S::DStencil{TS,N,P},x::DGrid{Txy,N,P}) where {TS,Txy,N,P}                   = mul!(zero(x),S,x)
+Base.:*(S::DMStencil{MM,TS,N,P},x::DMGrid{M,Txy,N,P,AA}) where {MM,M,TS,Txy,N,P,AA} = mul!(zero(x),S,x)
 
-function LinearAlgebra.dot(D1::DistributedArrays.DArray{T}, D2::DistributedArrays.DArray{T})::float(eltype(T)) where {T}
+LinearAlgebra.norm(g::DGrid) = norm(g.A)
+LinearAlgebra.norm(g::DMGrid) = norm(norm.(g))
+LinearAlgebra.dot(gx::DGrid{T,N,P,S}, gy::DGrid{T,N,P,S}) where {T,N,P,S}            = LinearAlgebra.dot(gx.A, gy.A)
+LinearAlgebra.dot(gx::DMGrid{M,T,N,P,S}, gy::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}    = sum(LinearAlgebra.dot.(gx, gy))
+## Until DistributedArrays.jl dot for Array is well-implemented
+function LinearAlgebra.dot(D1::DArray{T}, D2::DArray{T})::float(eltype(T)) where {T}
     r = asyncmap(procs(D1)) do p
         remotecall_fetch(p) do
             LinearAlgebra.dot(localpart(D1), localpart(D2))
@@ -68,10 +73,6 @@ function LinearAlgebra.dot(D1::DistributedArrays.DArray{T}, D2::DistributedArray
     return sum(r)
 end
 
-LinearAlgebra.norm(g::DGrid) = LinearAlgebra.norm(g.A)
-LinearAlgebra.norm(g::DMGrid) = LinearAlgebra.norm(LinearAlgebra.norm.(g))
-LinearAlgebra.dot(gx::DGrid{T,N,P,S}, gy::DGrid{T,N,P,S}) where {T,N,P,S}            = LinearAlgebra.dot(gx.A, gy.A)
-LinearAlgebra.dot(gx::DMGrid{M,T,N,P,S}, gy::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}    = sum(LinearAlgebra.dot.(gx, gy))
 
 Base.copy(g::DGrid{T,N,P,S}) where {T,N,P,S} = DGrid{T,N,P,S}(DArray(I->copy(localpart(g)), g.A))
 function Base.copyto!(g1::DGrid{T,N,P,S}, g2::DGrid{T,N,P,S}) where {T,N,P,S}
@@ -103,6 +104,7 @@ function /(g::DGrid{T,N,P,S}, x::Float64) where {T,N,P,S}
     D = DistributedArrays.DArray(I-> /(localpart(g.A),x), g.A)
     Grid{T,N,1,typeof(D)}(D)
 end
+/(mg::DMGrid{M,T,N,P,S}, x::Float64) where {M,T,N,P,S} = mg./x
 function *(x::Float64, g::DGrid{T,N,P,S}) where {T,N,P,S}
     D = DistributedArrays.DArray(I-> *(localpart(g.A),x), g.A)
     Grid{T,N,1,typeof(D)}(D)

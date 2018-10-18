@@ -2,11 +2,14 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
     realn, bnrm2 = gridsize(b), norm(b)
     if bnrm2==0 bnrm2 = 1.0 end
     r = copy(b)
-    A_mul_B!(-1, A, x, 1, r)
+    gemv!(-1, A, x, 1, r)
+    copyto!(r, M(r))
     err = norm(r)/bnrm2
     itersave = 0
     ismax = false
-    if err<tol return x, ismax, iter, err end
+    errlog = Float64[]
+
+    if err<tol return x, ismax, iter, err, errlog end
 
     restrt=min(restrt, realn-1)
     Q = [zero(b) for i in 1:restrt+1]
@@ -20,11 +23,12 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
     y = zeros(restrt+1)
 
     for iter in 1:maxiter
+        push!(errlog, err)
         itersave = iter
         if ifprint print(iter) end
         r = Q[1]
         copyto!(r, b)
-        A_mul_B!(-1, A, x, 1, r)
+        gemv!(-1, A, x, 1, r)
         copyto!(r, M(r))
         fill!(s, 0.0)
         s[1] = norm(r)
@@ -33,7 +37,7 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
         for i in 1:restrt
             isave = i
             w = Q[i+1]
-            A_mul_B!(1, A, Q[i], 0, w)
+            gemv!(1, A, Q[i], 0, w)
             copyto!(w, M(w))
             #w = A*Q[i]
             for k in 1:i
@@ -55,17 +59,19 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
             H[i,i] = cs[i]*H[i,i] + sn[i]*H[i+1,i]
             H[i+1,i] = 0.0
             err  = abs(s[i+1])/bnrm2
-            #@show err
-
+            myy = view(H, 1:i, 1:i)\view(s,1:i)
+            xcopy = copy(x)
+            for k in 1:i
+                LinearAlgebra.axpy!(myy[k],Q[k],xcopy)
+            end
+            
             if err <= tol
                 #y[1:i]  = H[1:i,1:i] \ s[1:i]
                 copyto!(y, s)
                 ldiv!(UpperTriangular(view(H, 1:i, 1:i)), view(y, 1:i))
                 for k in 1:i
-                    #x += y[k]*Q[k]
                     LinearAlgebra.axpy!(y[k],Q[k],x)
                 end
-                # x += Q[:,1:i]*y
                 flag = 0; break
             end
         end
@@ -80,7 +86,7 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
             LinearAlgebra.axpy!(y[k],Q[k],x)  #x += y[k]*Q[k]
         end
         copyto!(r, b)
-        A_mul_B!(-1.0, A, x, 1.0, r)
+        gemv!(-1, A, x, 1, r)
         copyto!(r, M(r))
         s[isave+1] = norm(r)
         err = s[isave+1]/bnrm2
@@ -94,5 +100,5 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
         ismax = true
     end
 
-    return x, ismax, itersave, err
+    return x, ismax, itersave, err, errlog
 end
