@@ -17,8 +17,8 @@ function make_P_E_precond_1(MS::MStencil{4,Float64,3,7})
 
     return Pinv, E, parrays, earrays
 end
-function precond_1(Pinv::MStencil{4,TS,3},E::MStencil{4,TS,3},x::MGrid{2,Tx,3}) where {TS,Tx}
-    return Pinv*(x-E*(Pinv*x))
+function precond_1(Pinv::MStencil{4,TS,3},E::MStencil{4,TS,3},x::MGrid{2,Tx,3}) where {TS,Tx}    
+    return Pinv*(gemv!(-1, E, Pinv*x, 1, copy(x)))
 end
 #=function make_P_E_precond_2(S::Stencil{TS,3,7}) where {TS}
     nx, ny, nz = size(S)

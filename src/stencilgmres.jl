@@ -59,11 +59,6 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
             H[i,i] = cs[i]*H[i,i] + sn[i]*H[i+1,i]
             H[i+1,i] = 0.0
             err  = abs(s[i+1])/bnrm2
-            myy = view(H, 1:i, 1:i)\view(s,1:i)
-            xcopy = copy(x)
-            for k in 1:i
-                LinearAlgebra.axpy!(myy[k],Q[k],xcopy)
-            end
             
             if err <= tol
                 #y[1:i]  = H[1:i,1:i] \ s[1:i]
