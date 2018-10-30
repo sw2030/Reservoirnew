@@ -1,4 +1,5 @@
 import Base.zero, Base.+, Base.-, Base.*, Base./, Base.@propagate_inbounds
+using LinearAlgebra
 
 struct Sindx{N,P} end
 struct StencilPoint{T,N,P}
