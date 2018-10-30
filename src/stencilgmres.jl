@@ -9,7 +9,7 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
     ismax = false
     errlog = Float64[]
 
-    if err<tol return x, ismax, iter, err, errlog end
+    if err<tol return x, ismax, itersave, err, errlog end
 
     restrt=min(restrt, realn-1)
     Q = [zero(b) for i in 1:restrt+1]
@@ -60,7 +60,7 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
             H[i+1,i] = 0.0
             err  = abs(s[i+1])/bnrm2
             
-            if err <= tol
+            if err < tol
                 #y[1:i]  = H[1:i,1:i] \ s[1:i]
                 copyto!(y, s)
                 ldiv!(UpperTriangular(view(H, 1:i, 1:i)), view(y, 1:i))
@@ -70,11 +70,10 @@ function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifp
                 flag = 0; break
             end
         end
-        if  err <= tol
+        if  err < tol
             flag = 0
             break
         end
-        #y = H[1:restrt,1:restrt]\s[1:restrt]
         copyto!(y, s)
         ldiv!(UpperTriangular(view(H, 1:restrt, 1:restrt)), view(y, 1:restrt))  #x += Q[:,1:restrt]*y
         for k in 1:restrt

@@ -70,7 +70,7 @@ function LinearAlgebra.dot(D1::DArray{T}, D2::DArray{T})::float(eltype(T)) where
             LinearAlgebra.dot(localpart(D1), localpart(D2))
         end
     end
-    return sum(r)
+    return reduce(+, r)
 end
 
 
