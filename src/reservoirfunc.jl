@@ -185,46 +185,31 @@ function getstencilArray{T}(m, q, g::Grid{T,2,5,Matrix{T}}, g_prev::Grid{T,2,5,M
     return stencilArray
 end=#
 
-function solve(m, q, grid_in, Tf; printt=false, rstrt=100, mi=100, gmrestol=1e-5)
-    psgrid = fill(grid_in, Tf)
-    for t = 1:Tf-1
-        if printt println(t) end
-        # Solve RES = 0 for each step, Initial guess psgrid[t]
-        g_guess = psgrid[t] # Initial guess is previous p and S
-        resv = getresidual(m, q, g_guess, psgrid[t])
-        ismax = false
-        while( norm(resv) > 1.0e-2 || ismax==true )
-            S = getstencil(m, q, g_guess, psgrid[t])
-            gmresresult = stencilgmres(S, resv, rstrt;tol = gmrestol,maxiter = mi)
-            g_guess -= gmresresult[1]
-            ismax = gmresresult[2]
-            resv = getresidual(m, q, g_guess, psgrid[t])
+function ReservoirSolve(m, q, g_guess, n_step ; tol_relnorm=1e-2, tol_dgnorm=1.0, tol_resnorm=10.0, tol_gmres=1e-4, n_restart=20, n_iter=50)
+    psgrid_old = copy(g_guess)
+    psgrid_new, result = copy(psgrid_old), Any[]
+    for steps in 1:n_step
+        RES = getresidual(m, q, psgrid_new, psgrid_old)
+        norm_RES_save, norm_dg = norm(RES), 10000.0
+        norm_RES = norm_RES_save
+        println("\nstep ", steps, "  norm_RES : ", norm_RES)
+        while(norm_RES/norm_RES_save > tol_relnorm && norm_dg > tol_dgnorm && norm_RES > tol_resnorm)
+            JAC = getstencil(m, q, psgrid_new, psgrid_old)
+            precP, precE = Reservoir.make_P_E_precond_1(JAC)
+            print("GMRES start... ")
+            gmresresult = stencilgmres(JAC, RES, n_restart; tol=tol_gmres, maxiter=n_iter, M=(t->Reservoir.precond_1(precP,precE,t)), ifprint=true)
+            println(" ...GMRES done")
+            LinearAlgebra.axpy!(-1.0, gmresresult[1], psgrid_new)
+            RES = getresidual(m, q, psgrid_new, psgrid_old)
+            norm_RES, norm_dg = norm(RES), norm(gmresresult[1])
+            @show norm_RES, norm_dg
         end
-        psgrid[t+1] = g_guess
+        copyto!(psgrid_old, psgrid_new)
+        push!(result, norm(psgrid_old[1]))
+        push!(result, norm(psgrid_old[2]))
     end
-    psgrid
-end
-function solveprec1(m, q, grid_in, Ts, Tf; printt=false, rstrt=100,
-                        mi=100, printil=false, gmrestol=1e-5, f=make_P_E_precond_1)
-    psgrid = fill(grid_in, Tf-Ts)
-    for t = Ts:Ts+Tf-1
-        if printt println("day ",t,"...") end
-        # Solve RES = 0 for each step, Initial guess psgrid[t]
-        g_guess = psgrid[t] # Initial guess is previous p and S
-        resv = getresidual(m, q, g_guess, psgrid[t])
-        ismax = false
-        while( norm(resv) > 1.0e-2 || ismax==true )
-            if printil print(norm(resv)," ") end
-            S = getstencil(m, q, g_guess, psgrid[t])
-            P, E = f(S)
-            gmresresult = stencilgmres(S, resv, rstrt;tol = gmrestol, maxiter = mi, M=(t->precond_1(P,E,t)))
-            g_guess -= gmresresult[1]
-            ismax = gmresresult[2]
-            resv = getresidual(m, q, g_guess, psgrid[t])
-        end
-        psgrid[t+1] = g_guess
-    end
-    psgrid
+    print("\nSolve done")
+    return result, psgrid_new
 end
 function getstencil(m, q, g::Grid{T,N,P,S}, g_prev::Grid{T,N,P,S}) where {T,N,P,S}
     SS = getstencilArray(m, q, g, g_prev)

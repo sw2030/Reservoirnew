@@ -1,3 +1,5 @@
+using ForwardDiff
+
 function res_f(m, q, g, g_prev, i, j, k;bth=true, p_bth=4000.0, maxinj = 7000.0)
 
     Nx, Ny, Nz = size(m)
