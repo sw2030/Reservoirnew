@@ -1,9 +1,7 @@
 
 struct Reservoirmodel{S<:AbstractArray}
-    # L::NTuple{N,Float64}
-    # Ns::NTuple{N,Int64}
-    Δt::Float64
-    Tf::Float64
+    q_oil::S
+    q_water::S
     Δ::NTuple{3,S}
     z::S
     k::Grid
@@ -184,7 +182,7 @@ function getstencilArray{T}(m, q, g::Grid{T,2,5,Matrix{T}}, g_prev::Grid{T,2,5,M
     end
     return stencilArray
 end=#
-
+#=
 function ReservoirSolve(m, q, g_guess, n_step ; tol_relnorm=1e-2, tol_dgnorm=1.0, tol_resnorm=10.0, tol_gmres=1e-4, n_restart=20, n_iter=50)
     psgrid_old = copy(g_guess)
     psgrid_new, result = copy(psgrid_old), Any[]
@@ -211,10 +209,11 @@ function ReservoirSolve(m, q, g_guess, n_step ; tol_relnorm=1e-2, tol_dgnorm=1.0
     print("\nSolve done")
     return result, psgrid_new
 end
-function getstencil(m, q, g::Grid{T,N,P,S}, g_prev::Grid{T,N,P,S}) where {T,N,P,S}
-    SS = getstencilArray(m, q, g, g_prev)
+=#
+function getstencil(m, Δt, g::Grid{T,N,P,S}, g_prev::Grid{T,N,P,S}) where {T,N,P,S}
+    SS = getstencilArray(m, Δt, g, g_prev)
     return Stencil{eltype(eltype(SS)),N,P,typeof(SS)}(SS)
 end
-function getstencil(m, q, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S}) where {M,T,N,P,S}
-    return MStencil{M*M,T,N,P,Array{StencilPoint{T,N,P},N}}(Stencil{T,N,P,Array{StencilPoint{T,N,P},N}}.(getstencilArray(m, q, g, g_prev)))
+function getstencil(m, Δt, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S}) where {M,T,N,P,S}
+    return MStencil{M*M,T,N,P,Array{StencilPoint{T,N,P},N}}(Stencil{T,N,P,Array{StencilPoint{T,N,P},N}}.(getstencilArray(m, Δt, g, g_prev)))
 end

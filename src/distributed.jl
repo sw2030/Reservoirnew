@@ -18,43 +18,39 @@ Base.close(S::DMStencil) = Base.close.(S.stencils)
 
 # Full mul! for DGrid, DMGrid
 function gemv!(a::Number, S::DStencil{TS,N}, x::DGrid{Txy,N},  b::Number, y::DGrid{Txy,N}) where {TS,Txy,N}
-    @sync begin
-        for id in procs(y)
-            @async remotecall_fetch(id) do
-                gemv!(a, localpart(S), localpart(x), b, localpart(y))
-                nothing
-            end
-        end
+    @sync for id in procs(y)
+        @async remotecall_fetch((a,S,x,b,y)->(gemv!(a,localpart(S),localpart(x),b,localpart(y)); nothing),id,a,S,x,b,y)
     end
-    @sync begin
-        for id in procs(y)
-            @async remotecall_fetch(gridsync, id, id, y.A)
-        end
+    @sync for id in procs(y)
+        @async remotecall_fetch(gridsync, id, id, y.A)
     end
     return y
 end
 function gemv!(a::Number, MS::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3},  b::Number, y::DMGrid{2,Txy,3}) where {Txy,TS}
-    gemv!(a,MS[1],x[1],b,y[1])
-    gemv!(a,MS[2],x[2],1,y[1])
-    gemv!(a,MS[3],x[1],b,y[2])
-    gemv!(a,MS[4],x[2],1,y[2])
-    return y
+    asyncmap(procs(y)) do p
+        remotecall_fetch(p) do
+            gemv!(a, localpart(MS[1]), localpart(x[1]), b, localpart(y[1]))
+            gemv!(a, localpart(MS[2]), localpart(x[2]), 1, localpart(y[1]))
+            gemv!(a, localpart(MS[3]), localpart(x[1]), b, localpart(y[2]))
+            gemv!(a, localpart(MS[4]), localpart(x[2]), 1, localpart(y[2]))
+            return nothing
+        end
+    end
+    @sync for id in procs(y)
+        @async remotecall_fetch(id) do
+            gridsync(id, y[1].A)
+            gridsync(id, y[2].A)
+        end
+    end
 end
 
 ### A*b version for DGrid, DMGrid
 function mul!(y::DGrid{Txy,N,P}, S::DStencil{TS,N,P}, x::DGrid{Txy,N,P}) where {TS,Txy,N,P}
-    @sync begin
-        for id in procs(y)
-            @async remotecall_fetch(id) do
-                mul!(localpart(y), localpart(S), localpart(x))
-                nothing
-            end
-        end
+    @sync for id in procs(y)
+        @async remotecall_fetch((y,S,x) -> (mul!(localpart(y), localpart(S), localpart(x)); nothing), id, y, S, x)
     end
-    @sync begin
-        for id in procs(y)
-            @async remotecall_fetch(gridsync, id, id, y.A)
-        end
+    @sync for id in procs(y)
+        @async remotecall_fetch(gridsync, id, id, y.A)
     end
     return y
 end
@@ -70,8 +66,8 @@ Base.:*(S::DMStencil{MM,TS,N,P},x::DMGrid{M,Txy,N,P,AA}) where {MM,M,TS,Txy,N,P,
 
 LinearAlgebra.norm(g::DGrid) = norm(g.A)
 LinearAlgebra.norm(g::DMGrid) = norm(norm.(g))
-LinearAlgebra.dot(gx::DGrid{T,N,P,S}, gy::DGrid{T,N,P,S}) where {T,N,P,S}            = LinearAlgebra.dot(gx.A, gy.A)
-LinearAlgebra.dot(gx::DMGrid{M,T,N,P,S}, gy::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}    = sum(LinearAlgebra.dot.(gx, gy))
+LinearAlgebra.dot(gx::DGrid{T,N,P,S}, gy::DGrid{T,N,P,S}) where {T,N,P,S}            = LinearAlgebra.dot(gx.A, gy.A) ## This is okay because dot works on inner DArray by automatic inheritance
+LinearAlgebra.dot(gx::DMGrid{M,T,N,P,S}, gy::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}    = reduce(+, LinearAlgebra.dot.(gx, gy))
 ## Until DistributedArrays.jl dot for Array is well-implemented
 function LinearAlgebra.dot(D1::DArray{T}, D2::DArray{T})::float(eltype(T)) where {T}
     r = asyncmap(procs(D1)) do p
@@ -146,13 +142,44 @@ end
 function gridsync(id, D::DistributedArrays.DArray{T,3}) where {T}
     s = size(D.pids)
     i,j,k = Tuple(CartesianIndices(s)[findfirst(isequal(id),D.pids)])
+    remotecall_fetch(id) do
+        if i!=1 
+            copyto!((@view (localpart(D).A)[1,:,:]), 
+                remotecall_fetch(m->(@view (localpart(m).A)[end-1,:,:]), D.pids[LinearIndices(s)[i-1,j,k]],D))
+        end
+        if i!=s[1]
+            copyto!((@view (localpart(D).A)[end,:,:]), 
+                remotecall_fetch(m->(@view (localpart(m).A)[2,:,:]), D.pids[LinearIndices(s)[i+1,j,k]],D))
+        end
+        if j!=1
+            copyto!((@view (localpart(D).A)[:,1,:]), 
+                remotecall_fetch(m->(@view (localpart(m).A)[:,end-1,:]), D.pids[LinearIndices(s)[i,j-1,k]],D))
+        end
+        if j!=s[2]
+            copyto!((@view (localpart(D).A)[:,end,:]), 
+                remotecall_fetch(m->(@view (localpart(m).A)[:,2,:]), D.pids[LinearIndices(s)[i,j+1,k]],D))
+        end
+        if k!=1
+            copyto!((@view (localpart(D).A)[:,:,1]), 
+                remotecall_fetch(m->(@view (localpart(m).A)[:,:,end-1]), D.pids[LinearIndices(s)[i,j,k-1]],D))
+        end
+        if k!=s[3]
+            copyto!((@view (localpart(D).A)[:,:,end]), 
+                remotecall_fetch(m->(@view (localpart(m).A)[:,:,2]), D.pids[LinearIndices(s)[i,j,k+1]],D))
+        end
+    end
+    return nothing
+end
+#=function gridsync(id, D::DistributedArrays.DArray{T,3}) where {T}
+    s = size(D.pids)
+    i,j,k = Tuple(CartesianIndices(s)[findfirst(isequal(id),D.pids)])
     if i!=1    remotecall_fetch(t->localpart(t).A[1,:,:] = remotecall_fetch(m->localpart(m).A[end-1,:,:], t.pids[LinearIndices(s)[i-1,j,k]],t),id,D) end
     if i!=s[1] remotecall_fetch(t->localpart(t).A[end,:,:] = remotecall_fetch(m->localpart(m).A[2,:,:], t.pids[LinearIndices(s)[i+1,j,k]],t),id,D) end
     if j!=1    remotecall_fetch(t->localpart(t).A[:,1,:] = remotecall_fetch(m->localpart(m).A[:,end-1,:], t.pids[LinearIndices(s)[i,j-1,k]],t),id,D) end
     if j!=s[2] remotecall_fetch(t->localpart(t).A[:,end,:] = remotecall_fetch(m->localpart(m).A[:,2,:], t.pids[LinearIndices(s)[i,j+1,k]],t),id,D) end
     if k!=1    remotecall_fetch(t->localpart(t).A[:,:,1] = remotecall_fetch(m->localpart(m).A[:,:,end-1], t.pids[LinearIndices(s)[i,j,k-1]],t),id,D) end
     if k!=s[3] remotecall_fetch(t->localpart(t).A[:,:,end] = remotecall_fetch(m->localpart(m).A[:,:,2], t.pids[LinearIndices(s)[i,j,k+1]],t),id,D) end
-end
+end=#
 
 
 function makegrid(x::DistributedArrays.DArray{T,N},P) where {T,N}## Take DArray
@@ -164,7 +191,6 @@ function makegrid(x::DistributedArrays.DArray{T,N},P) where {T,N}## Take DArray
     end
     return Grid{T,N,1,typeof(D)}(D)
 end
-#makegrid{M,T,N}(x::NTuple{M,DistributedArrays.DArray{T,N}},P) = makegrid.(x,P)
 
 #### IS this okay? type recognition inside constructor might be bad idea.
 DistributedArrays.localpart(G::DGrid) = localpart(G.A)
@@ -179,10 +205,11 @@ function DistributedArrays.localpart{MM,TS,N,P}(MS::DMStencil{MM,TS,N,P})
     localMS = localpart.(MS.stencils) ## returns (::Stencil, ...)
     MStencil{MM,TS,N,P,}(localpart.(MS))
 end =#
+
 function DistributedArrays.localpart(m::Reservoirmodel{S}) where {S<:DistributedArrays.DArray}
     Reservoirmodel(
-        m.Δt,
-        m.Tf,
+        localpart(m.q_oil),
+        localpart(m.q_water),
         localpart.(m.Δ),
         localpart(m.z),
         localpart(m.k),
@@ -200,8 +227,8 @@ function DistributedArrays.localpart(m::Reservoirmodel{S}) where {S<:Distributed
         m.μ_w,
         m.μ_o)
 end
-function getresidual(m, q, g::DMGrid{M,T,N,P,S}, g_prev::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}
-    D = DistributedArrays.DArray(I-> getlocalresidual(localpart(m), localpart(q), localpart(g), localpart(g_prev)), m.z)
+function getresidual(m, Δt, g::DMGrid{M,T,N,P,S}, g_prev::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}
+    D = DistributedArrays.DArray(I-> getlocalresidual(localpart(m), Δt, localpart(g), localpart(g_prev)), m.z)
     D1 = DArray(I->makegrid(map(t->t[1], localpart(D)),7), D)
     D2 = DArray(I->makegrid(map(t->t[2], localpart(D)),7), D)
     @sync begin
@@ -215,11 +242,11 @@ function getresidual(m, q, g::DMGrid{M,T,N,P,S}, g_prev::DMGrid{M,T,N,P,S}) wher
     close(D)
     return (Grid{T,N,1,typeof(D1)}(D1),Grid{T,N,1,typeof(D2)}(D2))
 end
-function getlocalstencil(m, q, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S}) where {M,T,N,P,S}
+function getlocalstencil(m, Δt, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S}) where {M,T,N,P,S}
     Nx, Ny, Nz = size(m)
     stencilArray = Array{NTuple{4,StencilPoint{Float64,3,7}},3}(undef,Nx, Ny, Nz)
     for i in 1:Nx, j in 1:Ny, k in 1:Nz
-        J = ForwardDiff.jacobian(θ -> res_f(m, q[i,j,k,:], θ, g_prev, i, j, k), [g[i-1,j,k,1] g[i-1,j,k,2]; g[i,j-1,k,1] g[i,j-1,k,2];
+        J = ForwardDiff.jacobian(θ -> res_f(m, Δt, θ, g_prev, i, j, k), [g[i-1,j,k,1] g[i-1,j,k,2]; g[i,j-1,k,1] g[i,j-1,k,2];
                                                                                     g[i,j,k-1,1] g[i,j,k-1,2]; g[i,j,k,1] g[i,j,k,2];
                                                                                     g[i,j,k+1,1] g[i,j,k+1,2]; g[i,j+1,k,1] g[i,j+1,k,2]; g[i+1,j,k,1] g[i+1,j,k,2]])
         stencilArray[i,j,k] = (StencilPoint{Float64,3,7}((J[1,1],J[1,2],J[1,3],J[1,4],J[1,5],J[1,6],J[1,7])), StencilPoint{Float64,3,7}((J[1,8],J[1,9],J[1,10],J[1,11],J[1,12],J[1,13],J[1,14])),
@@ -227,8 +254,8 @@ function getlocalstencil(m, q, g::MGrid{M,T,N,P,S}, g_prev::MGrid{M,T,N,P,S}) wh
     end
     return stencilArray
 end
-function getstencil(m, q, g::DMGrid{M,T,N,P,S}, g_prev::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}
-    D = DArray(I->getlocalstencil(localpart(m), localpart(q), localpart(g), localpart(g_prev)), m.z)
+function getstencil(m, Δt, g::DMGrid{M,T,N,P,S}, g_prev::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}
+    D = DArray(I->getlocalstencil(localpart(m), Δt, localpart(g), localpart(g_prev)), m.z)
     D1 = DArray(I->map(t->t[1],localpart(D)), D)
     D2 = DArray(I->map(t->t[2],localpart(D)), D)
     D3 = DArray(I->map(t->t[3],localpart(D)), D)
@@ -251,42 +278,45 @@ function precond_1(Pinv::DMStencil{4,TS,3},E::DMStencil{4,TS,3},x::DMGrid{2,Tx,3
     result = copy(x)
     tmp = Pinv*x
     gemv!(-1, E, tmp, 1, result)
+    close(tmp)
     tmp = Pinv*result
     gemv!(1, Pinv, result, 0, tmp)
     close(result)
     return tmp
 end
 
-function ReservoirSolve(m::Reservoirmodel{<:DArray}, q, g_guess, n_step ; tol_relnorm=1e-2, tol_dgnorm=10.0, tol_resnorm=10.0, tol_gmres=1e-4, n_restart=20, n_iter=50)
+function ReservoirSolve(m::Reservoirmodel{<:DArray}, Δt_plan, g_guess; tol_relnorm=1e-3, tol_dgnorm=10.0, tol_resnorm=100.0, tol_gmres=1e-3, n_restart=20, n_iter=30)
     psgrid_old = copy(g_guess)
-    psgrid_new, result = copy(psgrid_old), Any[]
-    for steps in 1:n_step
-        RES = getresidual(m, q, psgrid_new, psgrid_old)
+    psgrid_new = copy(psgrid_old)
+    for steps in 1:length(Δt_plan)
+        Δt = Δt_plan[steps]
+        RES = getresidual(m, Δt, psgrid_new, psgrid_old)
         norm_RES_save, norm_dg = norm(RES), 10000.0
         norm_RES = norm_RES_save
-        println("\nstep ", steps, "  norm_RES : ", norm_RES)
+        println("\nstep ", steps, " | norm_RES : ", norm_RES, " | Δt : ",Δt)
         gmresitercount = 0
         while(norm_RES/norm_RES_save > tol_relnorm && norm_dg > tol_dgnorm && norm_RES > tol_resnorm)
-            JAC = getstencil(m, q, psgrid_new, psgrid_old)
+            JAC = getstencil(m, Δt, psgrid_new, psgrid_old)
             precP, precE = Reservoir.make_P_E_precond_1(JAC)
             print("GMRES start... ")
-            gmresresult = stencilgmres(JAC, RES, n_restart; tol=tol_gmres, maxiter=n_iter, M=(t->Reservoir.precond_1(precP,precE,t)), ifprint=true)
+            tol_gmres_m = 1000.0 > norm_RES ? 1e-2 : tol_gmres
+            gmresresult = stencilgmres(JAC, RES, n_restart; tol=tol_gmres_m, maxiter=n_iter, M=(t->Reservoir.precond_1(precP,precE,t)), ifprint=true)
             gmresitercount += gmresresult[3]
             close(precP), close(precE), close(RES), close(JAC)
             println(" ...GMRES done")
             LinearAlgebra.axpy!(-1.0, gmresresult[1], psgrid_new)
-            RES = getresidual(m, q, psgrid_new, psgrid_old)
+            RES = getresidual(m, Δt, psgrid_new, psgrid_old)
             norm_RES, norm_dg = norm(RES), norm(gmresresult[1])
             close(gmresresult[1])
             @show norm_RES, norm_dg
         end
+        close(RES)
         copyto!(psgrid_old, psgrid_new)
-        push!(result, norm(psgrid_old[1]))
-        push!(result, norm(psgrid_old[2]))
-        println("Total GMRES iteration : ",gmresitercount)
+        println("Total GMRES iteration : ",gmresitercount, " | Avg p : ", sum(Array(psgrid_old[1].A))/60/220/85)
     end
+    close(psgrid_old)
     print("\nSolve done")
-    return result, psgrid_new
+    return psgrid_new
 end
 
 function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifprint=false, M=identity, x = zero(b))
@@ -296,13 +326,19 @@ function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::I
     gemv!(-1, A, x, 1, r)
     tmp = M(r)
     copyto!(r, tmp)
-    close(tmp)
-    err = norm(r)/bnrm2
+    if M!=identity close(tmp) end
+    #err = norm(r)/bnrm2
+    bnrm2 = norm(r)
+    err = 1.0
     itersave = 0
     ismax = false
     errlog = Float64[]
 
-    if err<tol return x, ismax, itersave, err, errlog end
+    if err<tol
+        copyto!(x, r)
+        close(r)
+        return x, ismax, itersave, err, errlog 
+    end
 
     restrt=min(restrt, realn-1)
     Q = [zero(b) for i in 1:restrt+1]
@@ -324,7 +360,7 @@ function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::I
         gemv!(-1, A, x, 1, r)
         tmp = M(r)
         copyto!(r, tmp)
-        close(tmp)
+        if M!=identity close(tmp) end
         fill!(s, 0.0)
         s[1] = norm(r)
         rmul!(r, inv(s[1]))
@@ -335,7 +371,7 @@ function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::I
             gemv!(1, A, Q[i], 0, w)
             tmp = M(w)
             copyto!(w, tmp)
-            close(tmp)
+            if M!=identity close(tmp) end
             for k in 1:i
                 H[k,i] = dot(w, Q[k])
                 LinearAlgebra.axpy!(-H[k,i],Q[k],w)
@@ -377,7 +413,7 @@ function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::I
         gemv!(-1, A, x, 1, r)
         tmp = M(r)
         copyto!(r, tmp)
-        close(tmp)
+        if M!=identity close(tmp) end
         s[isave+1] = norm(r)
         err = s[isave+1]/bnrm2
         if err<=tol
@@ -386,7 +422,7 @@ function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::I
         end
     end
     if flag==-1
-        print("Maxiter")
+        print(" Maxiter")
         ismax = true
     end
     close.(Q), close(r)
