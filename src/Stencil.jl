@@ -16,6 +16,7 @@ struct Grid{T,N,P,S<:AbstractArray}<:AbstractArray{T,N}
 end
 const MGrid{M,T,N,P,S}        = NTuple{M, Grid{T,N,P,S}}
 
+Grid(x::Array{T,N}) where {T,N} = Grid{T,N,}
 Stencil(x::Array{StencilPoint{T,N,P},N}) where {T,N,P} = Stencil{T,N,P,typeof(x)}(x)
 MStencil(x::NTuple{MM,Stencil{T,N,P,A}}) where {MM,T,N,P,A} = MStencil{MM,T,N,P,A}(x)
 
@@ -53,7 +54,7 @@ LinearAlgebra.axpy!(a::Number,Mg1::MGrid{M,T,N,P,S}, Mg2::MGrid{M,T,N,P,S}) wher
 @propagate_inbounds Base.setindex!(g::Grid{T,3,7}, a, i, j, k) where {T} = setindex!(g.A, a, i+1, j+1, k+1)
 
 LinearAlgebra.norm(g::MGrid) = LinearAlgebra.norm(map(norm,g))
-LinearAlgebra.dot(Mg1::MGrid{M,T,N,P,S}, Mg2::MGrid{M,T,N,P,S}) where {M,T,N,P,S} = sum(LinearAlgebra.dot.(Mg1,Mg2))
+LinearAlgebra.dot(Mg1::MGrid{M,T,N,P,S}, Mg2::MGrid{M,T,N,P,S}) where {M,T,N,P,S} = reduce(+, map(LinearAlgebra.dot, Mg1, Mg2))
 
 zero(x::Grid{T,N,P}) where {T,N,P}              = Grid{T,N,P,typeof(x.A)}(zero(x.A))
 zero(x::MGrid{2,T,N,P,S}) where {T,N,P,S}       = MGrid{2,T,N,P,S}((zero(x[1]), zero(x[1])))
@@ -138,7 +139,7 @@ function gemv!(a::Number, S::Stencil{TS,3,P}, x::Grid{Txy,3,P},  b::Number, y::G
     Sid = Sindx{3,P}()()
     @inbounds for k in axes(S.v,3), j in axes(S.v,2), i in axes(S.v,1)
         tmp = zero(Txy)
-        Sijk = S[i,j,k].value # with inbounds -0.3ms
+        Sijk = S[i,j,k].value 
         for c in 1:P
             tmp += Sijk[c]*x[i+Sid[c][1], j+Sid[c][2], k+Sid[c][3]]
         end
@@ -151,7 +152,7 @@ function mul!(y::Grid{Txy,3,P}, S::Stencil{TS,3,P}, x::Grid{Txy,3,P}) where {Txy
     Sid = Sindx{3,P}()()
     @inbounds for k in axes(S.v,3), j in axes(S.v,2), i in axes(S.v,1)
         tmp = zero(Txy)
-        Sijk = S[i,j,k].value # with inbounds -0.3ms
+        Sijk = S[i,j,k].value 
         for c in 1:P
             tmp += Sijk[c]*x[i+Sid[c][1], j+Sid[c][2], k+Sid[c][3]]
         end
@@ -169,7 +170,7 @@ function gemv!(a::Number, MS::MStencil{4,TS,3}, x::MGrid{2,Txy,3},  b::Number, y
     return y
 end
 # A*b version
-function mul!(y::MGrid{2,Txy,3}, MS::MStencil{4,TS,3}, x::MGrid{2,Txy,3},) where {TS,Txy}
+function mul!(y::MGrid{2,Txy,3}, MS::MStencil{4,TS,3}, x::MGrid{2,Txy,3}) where {TS,Txy}
     mul!(y[1],MS[1],x[1])
     mul!(y[1],MS[2],x[2])
     mul!(y[2],MS[3],x[1])

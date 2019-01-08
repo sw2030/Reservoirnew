@@ -1,9 +1,7 @@
 using Distributed, DistributedArrays, LinearAlgebra
-
 import Base.close
 
 const DGrid{T,N,P,S} = Grid{T,N,1,DArray{T,N,Grid{T,N,P,S}}}
-#const DMGrid{M,T,N,P,S} = NTuple{M,Grid{T,N,1,DArray{T,N,Grid{T,N,P,S}}}}
 const DMGrid{M,T,N,P,S} = MGrid{M,T,N,1,DArray{T,N,Grid{T,N,P,S}}}
 const DStencil{T,N,P} = Stencil{T,N,P,<:DArray}
 const DMStencil{MM,T,N,P} = MStencil{MM,T,N,P,<:DArray}
@@ -16,7 +14,80 @@ Base.close(S::DStencil) = Base.close(S.v)
 Base.close(S::DMStencil) = Base.close.(S.stencils)
 
 
-# Full mul! for DGrid, DMGrid
+###=====================================================================
+### Define Local parts. Should localpart of Stencils have type parameters?
+###=====================================================================
+DistributedArrays.localpart(G::DGrid) = localpart(G.A)
+DistributedArrays.localpart(G::DMGrid) = map(localpart, G) 
+DistributedArrays.localpart(S::DStencil) = Stencil(localpart(S.v))
+DistributedArrays.localpart(S::DMStencil) = MStencil(map(localpart,S.stencils))
+function DistributedArrays.localpart(m::Reservoirmodel{S}) where {S<:DistributedArrays.DArray}
+    Reservoirmodel(
+        localpart(m.q_oil),
+        localpart(m.q_water),
+        localpart.(m.Δ),
+        localpart(m.z),
+        localpart(m.k),
+        localpart(m.p_ref),
+        m.C_r,
+        m.ϕ_ref,
+        localpart(m.ϕ),
+        m.k_r_w,
+        m.k_r_o,
+        m.p_cow,
+        m.C_w,
+        m.C_o,
+        m.ρ_w,
+        m.ρ_o,
+        m.μ_w,
+        m.μ_o)
+end
+
+
+###=====================================================================
+### Base functions
+###=====================================================================
+Base.copy(g::DGrid{T,N,P,S}) where {T,N,P,S} = DGrid{T,N,P,S}(DArray(I->copy(localpart(g)), g.A))
+function Base.copyto!(g1::DGrid{T,N,P,S}, g2::DGrid{T,N,P,S}) where {T,N,P,S}
+    @sync begin
+        for id in procs(g1.A)
+            @async remotecall_fetch(id) do
+                copyto!(localpart(g1), localpart(g2))
+                nothing
+            end
+        end
+    end
+    g2
+end
+function /(g::DGrid{T,N,P,S}, x::Float64) where {T,N,P,S}
+    D = DistributedArrays.DArray(I-> /(localpart(g.A),x), g.A)
+    Grid{T,N,1,typeof(D)}(D)
+end
+/(mg::DMGrid{M,T,N,P,S}, x::Float64) where {M,T,N,P,S} = mg./x
+function *(x::Float64, g::DGrid{T,N,P,S}) where {T,N,P,S}
+    D = DistributedArrays.DArray(I-> *(localpart(g.A),x), g.A)
+    Grid{T,N,1,typeof(D)}(D)
+end
+function *(g::DGrid{T,N,P,S}, x::Float64) where {T,N,P,S}
+    D = DistributedArrays.DArray(I-> *(x,localpart(g.A)), g.A)
+    Grid{T,N,1,typeof(D)}(D)
+end
+
+
+###=====================================================================
+### Linear Algebra Routines
+###=====================================================================
+## Until DistributedArrays.jl dot for Array is well-implemented
+function LinearAlgebra.dot(D1::DArray{T}, D2::DArray{T})::float(eltype(T)) where {T}
+    r = asyncmap(procs(D1)) do p
+        remotecall_fetch(p) do
+            LinearAlgebra.dot(localpart(D1), localpart(D2))
+        end
+    end
+    return reduce(+, r)
+end
+
+# Full gemv! for DGrid, DMGrid
 function gemv!(a::Number, S::DStencil{TS,N}, x::DGrid{Txy,N},  b::Number, y::DGrid{Txy,N}) where {TS,Txy,N}
     @sync for id in procs(y)
         @async remotecall_fetch((a,S,x,b,y)->(gemv!(a,localpart(S),localpart(x),b,localpart(y)); nothing),id,a,S,x,b,y)
@@ -31,7 +102,7 @@ function gemv!(a::Number, MS::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3},  b::Number,
         remotecall_fetch(p) do
             gemv!(a, localpart(MS[1]), localpart(x[1]), b, localpart(y[1]))
             gemv!(a, localpart(MS[2]), localpart(x[2]), 1, localpart(y[1]))
-            gemv!(a, localpart(MS[3]), localpart(x[1]), b, localpart(y[2]))
+            gemv!(a, localpart(MS[3]), localpart(x[1]), b, localpart(y[2]))            
             gemv!(a, localpart(MS[4]), localpart(x[2]), 1, localpart(y[2]))
             return nothing
         end
@@ -43,7 +114,23 @@ function gemv!(a::Number, MS::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3},  b::Number,
         end
     end
 end
-
+function gemv2!(a::Number, MS::DMStencil{4,TS,3}, x::DMGrid{2,Txy,3},  b::Number, y::DMGrid{2,Txy,3}) where {Txy,TS}
+    asyncmap(procs(y)) do p
+        remotecall_fetch(p) do
+            gemv!(a, localpart(MS[1]), localpart(x[1]), b, localpart(y[1]))
+            gemv!(a, localpart(MS[2]), localpart(x[2]), 1, localpart(y[1]))
+            gemv!(a, localpart(MS[3]), localpart(x[1]), b, localpart(y[2]))            
+            gemv!(a, localpart(MS[4]), localpart(x[2]), 1, localpart(y[2]))
+            return nothing
+        end
+    end
+    @sync for id in procs(y)
+        @async remotecall_fetch(id) do
+            gridsync2(id, y[1].A)
+            gridsync2(id, y[2].A)
+        end
+    end
+end
 ### A*b version for DGrid, DMGrid
 function mul!(y::DGrid{Txy,N,P}, S::DStencil{TS,N,P}, x::DGrid{Txy,N,P}) where {TS,Txy,N,P}
     @sync for id in procs(y)
@@ -64,33 +151,12 @@ end
 Base.:*(S::DStencil{TS,N,P},x::DGrid{Txy,N,P}) where {TS,Txy,N,P}                   = mul!(zero(x),S,x)
 Base.:*(S::DMStencil{MM,TS,N,P},x::DMGrid{M,Txy,N,P,AA}) where {MM,M,TS,Txy,N,P,AA} = mul!(zero(x),S,x)
 
+## Other Linear Algebra Routines
 LinearAlgebra.norm(g::DGrid) = norm(g.A)
-LinearAlgebra.norm(g::DMGrid) = norm(norm.(g))
+LinearAlgebra.norm(g::DMGrid) = return norm(norm.(g))
 LinearAlgebra.dot(gx::DGrid{T,N,P,S}, gy::DGrid{T,N,P,S}) where {T,N,P,S}            = LinearAlgebra.dot(gx.A, gy.A) ## This is okay because dot works on inner DArray by automatic inheritance
 LinearAlgebra.dot(gx::DMGrid{M,T,N,P,S}, gy::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}    = reduce(+, LinearAlgebra.dot.(gx, gy))
-## Until DistributedArrays.jl dot for Array is well-implemented
-function LinearAlgebra.dot(D1::DArray{T}, D2::DArray{T})::float(eltype(T)) where {T}
-    r = asyncmap(procs(D1)) do p
-        remotecall_fetch(p) do
-            LinearAlgebra.dot(localpart(D1), localpart(D2))
-        end
-    end
-    return reduce(+, r)
-end
 
-
-Base.copy(g::DGrid{T,N,P,S}) where {T,N,P,S} = DGrid{T,N,P,S}(DArray(I->copy(localpart(g)), g.A))
-function Base.copyto!(g1::DGrid{T,N,P,S}, g2::DGrid{T,N,P,S}) where {T,N,P,S}
-    @sync begin
-        for id in procs(g1.A)
-            @async remotecall_fetch(id) do
-                copyto!(localpart(g1), localpart(g2))
-                nothing
-            end
-        end
-    end
-    g2
-end
 function LinearAlgebra.rmul!(g::DGrid, a::Number)
     @sync begin
         for id in procs(g.A)
@@ -102,22 +168,6 @@ function LinearAlgebra.rmul!(g::DGrid, a::Number)
     end
     return g
 end
-
-zero(g::DGrid{T,N,P,S}) where {T,N,P,S} = Grid{T,N,1,DArray{T,N,Grid{T,N,P,S}}}(DArray(I->zero(localpart(g)), g.A))
-zero(mg::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}  = zero.(mg)
-function /(g::DGrid{T,N,P,S}, x::Float64) where {T,N,P,S}
-    D = DistributedArrays.DArray(I-> /(localpart(g.A),x), g.A)
-    Grid{T,N,1,typeof(D)}(D)
-end
-/(mg::DMGrid{M,T,N,P,S}, x::Float64) where {M,T,N,P,S} = mg./x
-function *(x::Float64, g::DGrid{T,N,P,S}) where {T,N,P,S}
-    D = DistributedArrays.DArray(I-> *(localpart(g.A),x), g.A)
-    Grid{T,N,1,typeof(D)}(D)
-end
-function *(g::DGrid{T,N,P,S}, x::Float64) where {T,N,P,S}
-    D = DistributedArrays.DArray(I-> *(x,localpart(g.A)), g.A)
-    Grid{T,N,1,typeof(D)}(D)
-end
 function LinearAlgebra.axpy!(a::Number, g1::DGrid{T,N,P,S}, g2::DGrid{T,N,P,S}) where {T,N,P,S}
     @sync begin
         for id in procs(g1.A)
@@ -127,10 +177,15 @@ function LinearAlgebra.axpy!(a::Number, g1::DGrid{T,N,P,S}, g2::DGrid{T,N,P,S}) 
             end
         end
     end
-    g2
+    return g2
 end
+zero(g::DGrid{T,N,P,S}) where {T,N,P,S} = Grid{T,N,1,DArray{T,N,Grid{T,N,P,S}}}(DArray(I->zero(localpart(g)), g.A))
+zero(mg::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}  = zero.(mg)
 
 
+###=====================================================================
+### Grid Constructor
+###=====================================================================
 function gridsync(id, D::DistributedArrays.DArray{T,2}) where {T}
     s = size(D.pids)
     i,j = Tuple(CartesianIndices(s)[findfirst(isequal(id),D.pids)])#ind2sub(s, findfirst(isequal(id),D.pids))
@@ -170,18 +225,37 @@ function gridsync(id, D::DistributedArrays.DArray{T,3}) where {T}
     end
     return nothing
 end
-#=function gridsync(id, D::DistributedArrays.DArray{T,3}) where {T}
+function gridsync2(id, D::DistributedArrays.DArray{T,3}) where {T}
     s = size(D.pids)
     i,j,k = Tuple(CartesianIndices(s)[findfirst(isequal(id),D.pids)])
-    if i!=1    remotecall_fetch(t->localpart(t).A[1,:,:] = remotecall_fetch(m->localpart(m).A[end-1,:,:], t.pids[LinearIndices(s)[i-1,j,k]],t),id,D) end
-    if i!=s[1] remotecall_fetch(t->localpart(t).A[end,:,:] = remotecall_fetch(m->localpart(m).A[2,:,:], t.pids[LinearIndices(s)[i+1,j,k]],t),id,D) end
-    if j!=1    remotecall_fetch(t->localpart(t).A[:,1,:] = remotecall_fetch(m->localpart(m).A[:,end-1,:], t.pids[LinearIndices(s)[i,j-1,k]],t),id,D) end
-    if j!=s[2] remotecall_fetch(t->localpart(t).A[:,end,:] = remotecall_fetch(m->localpart(m).A[:,2,:], t.pids[LinearIndices(s)[i,j+1,k]],t),id,D) end
-    if k!=1    remotecall_fetch(t->localpart(t).A[:,:,1] = remotecall_fetch(m->localpart(m).A[:,:,end-1], t.pids[LinearIndices(s)[i,j,k-1]],t),id,D) end
-    if k!=s[3] remotecall_fetch(t->localpart(t).A[:,:,end] = remotecall_fetch(m->localpart(m).A[:,:,2], t.pids[LinearIndices(s)[i,j,k+1]],t),id,D) end
-end=#
-
-
+    remotecall_fetch(id) do
+        if i!=1 
+            copyto!((@view (localpart(D))[1,:,:]), 
+                (@view D[last(D.indices[i-1,j,k][1]),D.indices[i-1,j,k][2],D.indices[i-1,j,k][3]]))
+        end
+        if i!=s[1]
+            copyto!((@view (localpart(D))[end,:,:]), 
+                (@view D[first(D.indices[i+1,j,k][1]),D.indices[i+1,j,k][2],D.indices[i+1,j,k][3]]))
+        end
+        if j!=1
+            copyto!((@view (localpart(D))[:,1,:]), 
+                (@view D[D.indices[i,j-1,k][1],last(D.indices[i,j-1,k][2]),D.indices[i,j-1,k][3]]))
+        end
+        if j!=s[2]
+            copyto!((@view (localpart(D))[:,end,:]), 
+                (@view D[D.indices[i,j+1,k][1],first(D.indices[i,j+1,k][2]),D.indices[i,j+1,k][3]]))
+        end
+        if k!=1
+            copyto!((@view (localpart(D))[:,:,1]), 
+                (@view D[D.indices[i,j,k-1][1],D.indices[i,j,k-1][2],last(D.indices[i,j,k-1][3])]))
+        end
+        if k!=s[3]
+            copyto!((@view (localpart(D))[:,:,end]), 
+                (@view D[D.indices[i,j,k+1][1],D.indices[i,j,k+1][2],first(D.indices[i,j,k+1][3])]))
+        end
+    end
+    return nothing
+end
 function makegrid(x::DistributedArrays.DArray{T,N},P) where {T,N}## Take DArray
     D = DistributedArrays.DArray(I -> makegrid(DistributedArrays.localpart(x),P), x) ## Make DArray of Grids
     @sync begin
@@ -192,41 +266,11 @@ function makegrid(x::DistributedArrays.DArray{T,N},P) where {T,N}## Take DArray
     return Grid{T,N,1,typeof(D)}(D)
 end
 
-#### IS this okay? type recognition inside constructor might be bad idea.
-DistributedArrays.localpart(G::DGrid) = localpart(G.A)
-DistributedArrays.localpart(G::DMGrid) = map(localpart, G) ## localpart(DMG) = (localpart(DG1), localpart(DG2),...)
-DistributedArrays.localpart(S::DStencil) = Stencil(localpart(S.v))
-DistributedArrays.localpart(S::DMStencil) = MStencil(map(localpart,S.stencils))
-#= function DistributedArrays.localpart{TS,N,P}(S::DStencil{TS,N,P})
-    localS = localpart(S.v)
-    Stencil{TS,N,P,typeof(localS)}(localS)
-end
-function DistributedArrays.localpart{MM,TS,N,P}(MS::DMStencil{MM,TS,N,P})
-    localMS = localpart.(MS.stencils) ## returns (::Stencil, ...)
-    MStencil{MM,TS,N,P,}(localpart.(MS))
-end =#
 
-function DistributedArrays.localpart(m::Reservoirmodel{S}) where {S<:DistributedArrays.DArray}
-    Reservoirmodel(
-        localpart(m.q_oil),
-        localpart(m.q_water),
-        localpart.(m.Δ),
-        localpart(m.z),
-        localpart(m.k),
-        localpart(m.p_ref),
-        m.C_r,
-        m.ϕ_ref,
-        localpart(m.ϕ),
-        m.k_r_w,
-        m.k_r_o,
-        m.p_cow,
-        m.C_w,
-        m.C_o,
-        m.ρ_w,
-        m.ρ_o,
-        m.μ_w,
-        m.μ_o)
-end
+
+###=====================================================================
+### Compute Residual & Jacobian
+###=====================================================================
 function getresidual(m, Δt, g::DMGrid{M,T,N,P,S}, g_prev::DMGrid{M,T,N,P,S}) where {M,T,N,P,S}
     D = DistributedArrays.DArray(I-> getlocalresidual(localpart(m), Δt, localpart(g), localpart(g_prev)), m.z)
     D1 = DArray(I->makegrid(map(t->t[1], localpart(D)),7), D)
@@ -263,6 +307,11 @@ function getstencil(m, Δt, g::DMGrid{M,T,N,P,S}, g_prev::DMGrid{M,T,N,P,S}) whe
     close(D)
     return MStencil((Stencil{T,N,P,typeof(D1)}(D1), Stencil{T,N,P,typeof(D1)}(D2), Stencil{T,N,P,typeof(D1)}(D3), Stencil{T,N,P,typeof(D1)}(D4)))
 end
+
+
+###=====================================================================
+### Preconditioning
+###=====================================================================
 function make_P_E_precond_1(DMS::DMStencil{4,Float64,3,7})
     rrs = [@spawnat p make_P_E_precond_1(localpart(DMS))[3:4] for p in workers()]
     PDarrays = [DArray(DMS.stencils[1].v) do I
@@ -278,48 +327,23 @@ function precond_1(Pinv::DMStencil{4,TS,3},E::DMStencil{4,TS,3},x::DMGrid{2,Tx,3
     result = copy(x)
     tmp = Pinv*x
     gemv!(-1, E, tmp, 1, result)
-    close(tmp)
-    tmp = Pinv*result
     gemv!(1, Pinv, result, 0, tmp)
     close(result)
     return tmp
 end
-
-function ReservoirSolve(m::Reservoirmodel{<:DArray}, Δt_plan, g_guess; tol_relnorm=1e-3, tol_dgnorm=10.0, tol_resnorm=100.0, tol_gmres=1e-3, n_restart=20, n_iter=30)
-    psgrid_old = copy(g_guess)
-    psgrid_new = copy(psgrid_old)
-    for steps in 1:length(Δt_plan)
-        Δt = Δt_plan[steps]
-        RES = getresidual(m, Δt, psgrid_new, psgrid_old)
-        norm_RES_save, norm_dg = norm(RES), 10000.0
-        norm_RES = norm_RES_save
-        println("\nstep ", steps, " | norm_RES : ", norm_RES, " | Δt : ",Δt)
-        gmresitercount = 0
-        while(norm_RES/norm_RES_save > tol_relnorm && norm_dg > tol_dgnorm && norm_RES > tol_resnorm)
-            JAC = getstencil(m, Δt, psgrid_new, psgrid_old)
-            precP, precE = Reservoir.make_P_E_precond_1(JAC)
-            print("GMRES start... ")
-            tol_gmres_m = 1000.0 > norm_RES ? 1e-2 : tol_gmres
-            gmresresult = stencilgmres(JAC, RES, n_restart; tol=tol_gmres_m, maxiter=n_iter, M=(t->Reservoir.precond_1(precP,precE,t)), ifprint=true)
-            gmresitercount += gmresresult[3]
-            close(precP), close(precE), close(RES), close(JAC)
-            println(" ...GMRES done")
-            LinearAlgebra.axpy!(-1.0, gmresresult[1], psgrid_new)
-            RES = getresidual(m, Δt, psgrid_new, psgrid_old)
-            norm_RES, norm_dg = norm(RES), norm(gmresresult[1])
-            close(gmresresult[1])
-            @show norm_RES, norm_dg
-        end
-        close(RES)
-        copyto!(psgrid_old, psgrid_new)
-        println("Total GMRES iteration : ",gmresitercount, " | Avg p : ", sum(Array(psgrid_old[1].A))/60/220/85)
-    end
-    close(psgrid_old)
-    print("\nSolve done")
-    return psgrid_new
+function precond_2(Pinv::DMStencil{4,TS,3},E::DMStencil{4,TS,3},x::DMGrid{2,Tx,3}) where {TS,Tx} 
+    tmp1 = copy(x)
+    tmp2 = Pinv*x
+    gemv!(-1, E, tmp2, 1, tmp1)   # tmp1 = x - EPx
+    gemv!(1, Pinv, tmp1, 0, tmp2) # tmp2 = P(x-EPx)
+    copyto!(tmp1, x)              # tmp1 = x
+    gemv!(-1, E, tmp2, 1, tmp1)   # tmp1 = x - E(P(x-EPx))
+    gemv!(1, Pinv, tmp1, 0, tmp2) # tmp2 = P(x-E(P(x-EPx)))
+    close(tmp1)
+    return tmp2
 end
 
-function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifprint=false, M=identity, x = zero(b))
+function stencilgmres(A, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifprint=false, M=identity, x = zero(b))
     realn, bnrm2 = gridsize(b), norm(b)
     if bnrm2==0 bnrm2 = 1.0 end
     r = copy(b)
@@ -354,7 +378,7 @@ function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::I
     for iter in 1:maxiter
         push!(errlog, err)
         itersave = iter
-        if ifprint print(iter) end
+        if ifprint print(".") end
         r = Q[1]
         copyto!(r, b)
         gemv!(-1, A, x, 1, r)
@@ -422,10 +446,114 @@ function stencilgmres(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::I
         end
     end
     if flag==-1
-        print(" Maxiter")
+        ifprint==true && print(" Maxiter")
         ismax = true
     end
     close.(Q), close(r)
 
     return x, ismax, itersave, err, errlog
 end
+function stencilgmres2(A::DMStencil, b, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifprint=false, M=identity, x = zero(b))
+    realn, bnrm2 = gridsize(b), norm(b)
+    if bnrm2==0 bnrm2 = 1.0 end
+    r = copy(b)
+    tmp = M(x)
+    gemv!(-1, A, tmp, 1, r)
+    if M!=identity close(tmp) end
+    err = 1.0
+    itersave = 0
+    ismax = false
+    errlog = Float64[]
+
+    restrt=min(restrt, realn-1)
+    Q = [zero(b) for i in 1:restrt+1]
+    H = zeros(restrt+1, restrt)
+    cs = zeros(restrt)
+    sn = zeros(restrt)
+    s = zeros(restrt+1)
+    flag = -1
+    isave = 1
+
+    y = zeros(restrt+1)
+
+    for iter in 1:maxiter
+        push!(errlog, err)
+        itersave = iter
+        if ifprint&&(iter%10==0) print(".") end
+        r = Q[1]
+        copyto!(r, b)
+        tmp = M(x)
+        gemv!(-1, A, tmp, 1, r)
+        if M!=identity close(tmp) end
+        fill!(s, 0.0)
+        s[1] = norm(r)
+        rmul!(r, inv(s[1]))
+
+        for i in 1:restrt
+            isave = i
+            w = Q[i+1]
+            tmp = M(Q[i])
+            gemv!(1, A, tmp, 0, w)
+            if M!=identity close(tmp) end
+            for k in 1:i
+                H[k,i] = dot(w, Q[k])
+                LinearAlgebra.axpy!(-H[k,i],Q[k],w)
+            end
+            H[i+1,i] = norm(w)
+            rmul!(w, inv(H[i+1,i]))
+            for k in 1:i-1
+                temp     =  cs[k]*H[k,i] + sn[k]*H[k+1,i]
+                H[k+1,i] = -sn[k]*H[k,i] + cs[k]*H[k+1,i]
+                H[k,i]   = temp
+            end
+
+            cs[i], sn[i] = LinearAlgebra.givensAlgorithm(H[i, i], H[i+1, i])
+            s[i+1] = -sn[i]*s[i]
+            s[i]   = cs[i]*s[i]
+            H[i,i] = cs[i]*H[i,i] + sn[i]*H[i+1,i]
+            H[i+1,i] = 0.0
+            err  = abs(s[i+1])/bnrm2
+            
+            
+            if err < tol
+                copyto!(y, s)
+                ldiv!(UpperTriangular(view(H, 1:i, 1:i)), view(y, 1:i))
+                for k in 1:i
+                    LinearAlgebra.axpy!(y[k],Q[k],x)
+                end
+                flag = 0; break
+            end
+            
+        end
+        if  err < tol
+            flag = 0
+            break
+        end
+        copyto!(y, s)
+        ldiv!(UpperTriangular(view(H, 1:restrt, 1:restrt)), view(y, 1:restrt))  
+        for k in 1:restrt
+            LinearAlgebra.axpy!(y[k],Q[k],x)  
+        end
+        copyto!(r, b)
+        tmp = M(x)
+        gemv!(-1, A, tmp, 1, r)
+        if M!=identity close(tmp) end
+        s[isave+1] = norm(r)
+        err = s[isave+1]/bnrm2
+        if err<=tol
+            flag = 0
+            break
+        end
+    end
+    if flag==-1
+        ifprint==true && print(" Maxiter")
+        ismax = true
+    end
+    tmp = M(x)
+    copyto!(x, tmp)
+    if M!=identity close(tmp) end
+    close.(Q), close(r)
+
+    return x, ismax, itersave, err, errlog
+end
+

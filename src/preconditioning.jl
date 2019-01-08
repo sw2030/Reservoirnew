@@ -18,22 +18,20 @@ function make_P_E_precond_1(MS::MStencil{4,Float64,3,7})
     return Pinv, E, parrays, earrays
 end
 function precond_1(Pinv::MStencil{4,TS,3},E::MStencil{4,TS,3},x::MGrid{2,Tx,3}) where {TS,Tx}    
-    return Pinv*(gemv!(-1, E, Pinv*x, 1, copy(x)))
+    result = copy(x)
+    tmp = zero(x)
+    gemv!(1, Pinv, x, 0, tmp)
+    gemv!(-1, E, tmp, 1, result)
+    gemv!(1, Pinv, result, 0, tmp)
+    return tmp
 end
-#=function make_P_E_precond_2(S::Stencil{TS,3,7}) where {TS}
-    nx, ny, nz = size(S)
-    parray = Array{eltype(S.v),3}(nx, ny, nz)
-    earray = Array{eltype(S.v),3}(nx, ny, nz)
-    SMzero = @SMatrix(zeros(2,2))
-    for i in 1:nx, j in 1:ny, k in 1:nz
-        tmp_e = Base.setindex(S[i,j,k].value,@SMatrix(zeros(2,2)),4)
-        tmp_e = Base.setindex(tmp_e, @SMatrix(zeros(2,2)),1)
-        tmp_e = Base.setindex(tmp_e, @SMatrix(zeros(2,2)),7)
-        earray[i,j,k] = StencilPoint{StaticArrays.SArray{Tuple{2,2},Float64,2,4},3,7}(tmp_e)
-        parray[i,j,k] = StencilPoint{StaticArrays.SArray{Tuple{2,2},Float64,2,4},3,7}((inv(S[i,j,k].value[1]),SMzero,SMzero,inv(S[i,j,k].value[4]),SMzero,SMzero,inv(S[i,j,k].value[7])))
-    end
-    Pinv = Stencil{StaticArrays.SArray{Tuple{2,2},Float64,2,4},3,7,typeof(parray)}(parray)
-    E    = Stencil{StaticArrays.SArray{Tuple{2,2},Float64,2,4},3,7,typeof(parray)}(earray)
-
-    return Pinv, E
-end=#
+function precond_2(Pinv::MStencil{4,TS,3},E::MStencil{4,TS,3},x::MGrid{2,Tx,3}) where {TS,Tx} 
+    tmp1 = copy(x)
+    tmp2 = Pinv*x
+    gemv!(-1, E, tmp2, 1, tmp1)   # tmp1 = x - EPx
+    gemv!(1, Pinv, tmp1, 0, tmp2) # tmp2 = P(x-EPx)
+    copyto!(tmp1, x)              # tmp1 = x
+    gemv!(-1, E, tmp2, 1, tmp1)   # tmp1 = x - E(P(x-EPx))
+    gemv!(1, Pinv, tmp1, 0, tmp2) # tmp2 = P(x-E(P(x-EPx)))
+    return tmp2
+end
