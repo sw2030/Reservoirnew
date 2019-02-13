@@ -61,7 +61,7 @@ function gemv!(a::Number, rA::GPUStencil{T,3,P}, rx::GPUGrid{T,3,P}, b::Number, 
         return
     end
     
-    max_threads = 256
+    max_threads = 300
     threads_x   = min(max_threads, size(ry,1))
     threads_y   = min(max_threads ÷ threads_x, size(ry,2))
     threads_z   = min(max_threads ÷ threads_x ÷ threads_y, size(ry,3))
@@ -91,12 +91,14 @@ function make_P_E_precond_1(MS::GPUMStencil{4,Float64,3,7})
             v1 = p4[i,j,k].value[4]/d
             v2 = -p3[i,j,k].value[4]/d
             v3 = -p2[i,j,k].value[4]/d
-            v4 = p1[i,j,k].value[4]/d
+            v = p1[i,j,k].value[4]/d
             z = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             p1[i,j,k] = Reservoir.StencilPoint{Float64,3,7}(Base.setindex(z,v1,4))
             p2[i,j,k] = Reservoir.StencilPoint{Float64,3,7}(Base.setindex(z,v3,4))
             p3[i,j,k] = Reservoir.StencilPoint{Float64,3,7}(Base.setindex(z,v2,4))
             p4[i,j,k] = Reservoir.StencilPoint{Float64,3,7}(Base.setindex(z,v4,4))
+	    	
+	    return
         end
     end
     

@@ -1,4 +1,4 @@
-using CuArrays, Distributed, DistributedArrays, LinearAlgebra
+using CuArrays, Distributed, DistributedArrays, LinearAlgebra, NVTX
 
 function CutoD(custencil::GPUStencil{T,N,P}) where{T,N,P}
     dA = distribute(Array(custencil.v));
@@ -130,7 +130,7 @@ function SPE10adaptivesolve(m::Reservoirmodel, t_init, Δt, g_guess, n_steps; to
         while(norm_RES/norm_RES_save > tol_relnorm)
             
             ## In case it is diverging
-            if (norm_RES > 1.0e7 || gmresnumcount > 9)
+            if (norm_RES > 1.0e6 || gmresnumcount > 9 || (gmresnumcount>4 && norm_RES>1.0e4))
                 copyto!(psgrid_new, psgrid_old)
                 Δt *= 0.5
                 println("\nNew Δt adapted... | Δt : ",Δt, " | ΣΔt : ", t_init+Δt)
@@ -368,7 +368,7 @@ function stencilgmres2(A::MStencil, b::MGrid, restrt::Int64; tol::Real=1e-5, max
     realn, bnrm2 = gridsize(b), norm(b)
     if bnrm2==0 bnrm2 = 1.0 end
     r = copy(b)
-    gemv!(-1, A, M(x), 1, r)
+    gemv!(-1.0, A, M(x), 1.0, r)
     err = 1.0
     itersave = 0
     ismax = false
@@ -391,86 +391,17 @@ function stencilgmres2(A::MStencil, b::MGrid, restrt::Int64; tol::Real=1e-5, max
     copyto!(x, M(x))
     return x, ismax, itersave, err, errlog
 end
-@inline function innerloop1!(Q, H::Array{T,2}, cs::Array{T,1}, sn::Array{T,1}, s::Array{T,1}, A::MStencil, b::MGrid, r::MGrid, M::Function, errlog::Array{T,1}, err::T, itersave::Int64, bnrm2::T, maxiter::Int64, isave::Int64, tol::T, y::Array{T,1}, x::MGrid, flag::Int64, restrt::Int64) where {T}
-    @inbounds for iter in 1:maxiter
-        push!(errlog, err)
-        itersave = iter
-        copyto!(r, b-A*M(x))   
-        fill!(s, 0.0)
-        @time s[1] = norm(r) 
-        copyto!(Q[1], r)
-        rmul!(Q[1], s[1])
-        @time isave, err = innerloop2!(Q, H, cs, sn, s, A, M, restrt, isave, err, tol, bnrm2, y, x, flag)
-        if  err < tol
-            flag = 0
-            break
-        end
-        copyto!(y, s)
-        ldiv!(UpperTriangular(view(H, 1:restrt, 1:restrt)), view(y, 1:restrt))  
-        for k in 1:restrt
-            LinearAlgebra.axpy!(y[k],Q[k],x)  
-        end
-        copyto!(r, b)
-        gemv!(-1, A, M(x), 1, r)
-        s[isave+1] = norm(r)
-        err = s[isave+1]/bnrm2
-        if err<=tol
-            flag = 0
-            break
-        end
-    end
-    return itersave
-end
-@inline function innerloop2!(Q, H::Array{T,2}, cs::Array{T,1}, sn::Array{T,1}, s::Array{T,1}, A::MStencil, M::Function, restrt::Int64, isave::Int64, err::T, tol::T, bnrm2::T, y::Array{T,1}, x::MGrid, flag::Int64) where {T}
-    @inbounds for i in 1:restrt
-        isave = i
-        w = Q[i+1]
-        gemv!(1, A, M(Q[i]), 0, w)  
-        innerloop3!(Q, H, w, i)
-        H[i+1,i] = norm(w)
-        rmul!(w, inv(H[i+1,i]))
-        for k in 1:i-1
-            temp     =  cs[k]*H[k,i] + sn[k]*H[k+1,i]
-            H[k+1,i] = -sn[k]*H[k,i] + cs[k]*H[k+1,i]
-            H[k,i]   = temp
-        end
 
-        cs[i], sn[i] = LinearAlgebra.givensAlgorithm(H[i, i], H[i+1, i])
-        s[i+1] = -sn[i]*s[i]
-        s[i]   = cs[i]*s[i]
-        H[i,i] = cs[i]*H[i,i] + sn[i]*H[i+1,i]
-        H[i+1,i] = 0.0
-        err  = abs(s[i+1])/bnrm2
-
-        if err < tol
-            copyto!(y, s)
-            ldiv!(UpperTriangular(view(H, 1:i, 1:i)), view(y, 1:i))
-            for k in 1:i
-                LinearAlgebra.axpy!(y[k],Q[k],x)
-            end
-            flag = 0; break
-        end
-    end  
-    return isave, err
-end
-@inline function innerloop3!(Q, H::Array{T,2}, w::MGrid, i) where {T}
-    @inbounds for k in 1:i
-        H[k,i] = LinearAlgebra.dot(w, Q[k])
-        LinearAlgebra.axpy!(-H[k,i],Q[k],w)
-    end
-end
-#=
 function innerloop1!(Q, H::Array{T,2}, cs::Array{T,1}, sn::Array{T,1}, s::Array{T,1}, A::MStencil, b::MGrid, r::MGrid, M::Function, errlog::Array{T,1}, err::T, itersave::Int64, bnrm2::T, maxiter::Int64, isave::Int64, tol::T, y::Array{T,1}, x::MGrid, flag::Int64, restrt::Int64) where {T}
-    @inbounds for iter in 1:maxiter
+    for iter in 1:maxiter
         push!(errlog, err)
         itersave = iter
         r = Q[1]
         copyto!(r, b)    
         gemv!(-1, A, M(x), 1, r)   
         fill!(s, 0.0)
-        tmp = norm(r)
-        s[1] = norm(r) 
-        rmul!(r, inv(s[1]))
+	s[1] = norm(r)
+	rmul!(r, inv(s[1]))
         isave, err = innerloop2!(Q, H, cs, sn, s, A, M, restrt, isave, err, tol, bnrm2, y, x, flag)
         if  err < tol
             flag = 0
@@ -493,7 +424,7 @@ function innerloop1!(Q, H::Array{T,2}, cs::Array{T,1}, sn::Array{T,1}, s::Array{
     return itersave
 end
 function innerloop2!(Q, H::Array{T,2}, cs::Array{T,1}, sn::Array{T,1}, s::Array{T,1}, A::MStencil, M::Function, restrt::Int64, isave::Int64, err::T, tol::T, bnrm2::T, y::Array{T,1}, x::MGrid, flag::Int64) where {T}
-    @inbounds for i in 1:restrt
+    for i in 1:restrt
         isave = i
         w = Q[i+1]
         gemv!(1, A, M(Q[i]), 0, w)  
@@ -525,10 +456,95 @@ function innerloop2!(Q, H::Array{T,2}, cs::Array{T,1}, sn::Array{T,1}, s::Array{
     return isave, err
 end
 function innerloop3!(Q, H::Array{T,2}, w::MGrid, i) where {T}
-    @inbounds for k in 1:i
+    for k in 1:i
         H[k,i] = LinearAlgebra.dot(w, Q[k])
         LinearAlgebra.axpy!(-H[k,i],Q[k],w)
     end
 end
-=#
 
+function stencilgmres3(A::MStencil, b::MGrid, restrt::Int64; tol::Real=1e-5, maxiter::Int=200, ifprint=false, M=identity, x = zero(b))
+    realn, bnrm2 = gridsize(b), norm(b)
+    if bnrm2==0 bnrm2 = 1.0 end
+    r = copy(b)::typeof(b)
+    gemv!(-1.0, A, M(x), 1.0, r)
+    err = 1.0
+    itersave = 0
+    ismax = false
+    errlog = Float64[]
+
+    restrt=min(restrt, realn-1)
+    Q = [zero(b) for i in 1:restrt+1]
+    H = zeros(restrt+1, restrt)
+    cs = zeros(restrt)
+    sn = zeros(restrt)
+    s = zeros(restrt+1)
+    flag = -1
+    isave = 1
+    y = zeros(restrt+1)
+    for iter in 1:maxiter
+        push!(errlog, err)
+        itersave = iter
+        r = Q[1]
+	copyto!(r, b)
+        gemv!(-1, A, M(x), 1, r)
+        fill!(s, 0.0)
+        s[1] = norm(r)
+        rmul!(r, inv(s[1]))
+        for i in 1:restrt
+        	isave = i
+        	w = Q[i+1]
+    	   	gemv!(1, A, M(Q[i]), 0, w)
+		for k in 1:i
+			NVTX.@range string(iter,"-",i,"-",k) norm(b)
+			H[k,i] = LinearAlgebra.dot(w, Q[k])
+        		LinearAlgebra.axpy!(-H[k,i],Q[k],w)
+    		end
+       		H[i+1,i] = norm(w)
+       	 	rmul!(w, inv(H[i+1,i]))
+       		for k in 1:i-1
+            		temp     =  cs[k]*H[k,i] + sn[k]*H[k+1,i]
+            		H[k+1,i] = -sn[k]*H[k,i] + cs[k]*H[k+1,i]
+          		H[k,i]   = temp
+        	end
+
+        	cs[i], sn[i] = LinearAlgebra.givensAlgorithm(H[i, i], H[i+1, i])
+        	s[i+1] = -sn[i]*s[i]
+        	s[i]   = cs[i]*s[i]
+        	H[i,i] = cs[i]*H[i,i] + sn[i]*H[i+1,i]
+        	H[i+1,i] = 0.0
+        	err  = abs(s[i+1])/bnrm2
+
+        	if err < tol
+            		copyto!(y, s)
+            		ldiv!(UpperTriangular(view(H, 1:i, 1:i)), view(y, 1:i))
+            		for k in 1:i
+                		LinearAlgebra.axpy!(y[k],Q[k],x)
+            		end
+            		flag = 0; break
+		end
+        end
+        if  err < tol
+            flag = 0
+            break
+        end
+        copyto!(y, s)
+        ldiv!(UpperTriangular(view(H, 1:restrt, 1:restrt)), view(y, 1:restrt))
+        for k in 1:restrt
+            LinearAlgebra.axpy!(y[k],Q[k],x)
+        end
+        copyto!(r, b)
+        gemv!(-1, A, M(x), 1, r)
+        s[isave+1] = norm(r)
+        err = s[isave+1]/bnrm2
+        if err<=tol
+            flag = 0
+            break
+        end
+    end
+    if flag==-1
+        ifprint==true && print(" Maxiter")
+        ismax = true
+    end
+    copyto!(x, M(x))
+    return x, ismax, itersave, err, errlog
+end
